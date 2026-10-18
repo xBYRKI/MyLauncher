@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Launcher</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="titlebar" data-tauri-drag-region>
+    <div class="win-controls">
+      <button class="win-btn" id="winMin" title="Minimieren"><svg viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button class="win-btn" id="winMax" title="Maximieren"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button class="win-btn close" id="winClose" title="Schließen"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    </div>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo" data-tauri-drag-region>
+        <div class="logo-mark" id="logoMark"></div>
+        <div>
+          <div class="logo-name" id="brandName"></div>
+          <div class="logo-tag" id="brandTag"></div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="home"><span class="ico" data-icon="home"></span>Start</button>
+        <button class="nav-item" data-view="instances"><span class="ico" data-icon="grid"></span>Instanzen<span class="count" id="instCount"></span></button>
+        <button class="nav-item" data-view="packs"><span class="ico" data-icon="box"></span>Modpacks<span class="count" id="packCount"></span></button>
+        <button class="nav-item" data-view="waypoints"><span class="ico" data-icon="pin"></span>Wegpunkte<span class="count" id="wpCount"></span></button>
+        <button class="nav-item" data-view="settings"><span class="ico" data-icon="gear"></span>Einstellungen</button>
+      </nav>
+
+      <div class="spacer"></div>
+
+      <button class="prism-pill" id="prismPill" title="Prism Launcher öffnen"></button>
+
+      <div class="account">
+        <div class="acc-head" id="accHead"></div>
+        <div class="acc-body">
+          <div class="acc-label">Konto</div>
+          <select id="accountSelect" class="acc-select"></select>
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="view active" id="view-home">
+        <div class="hero" id="hero"></div>
+        <div class="home-grid">
+          <div>
+            <h2 class="section-title">Neuigkeiten</h2>
+            <div class="news-list" id="newsList"></div>
+          </div>
+          <div>
+            <h2 class="section-title">Server</h2>
+            <div class="server-list" id="serverList"></div>
+            <h2 class="section-title">Zuletzt gespielt</h2>
+            <div class="recent-list" id="recentList"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-instances">
+        <header class="view-head">
+          <div>
+            <h1>Instanzen</h1>
+            <p class="muted">Direkt aus Prism Launcher – Änderungen in Prism erscheinen hier sofort.</p>
+          </div>
+          <div class="head-actions">
+            <input type="search" id="instSearch" class="input" placeholder="Suchen …">
+            <button class="btn ghost" id="btnNewInPrism"><span class="ico" data-icon="plus"></span>Neu in Prism</button>
+          </div>
+        </header>
+        <div class="inst-grid" id="instGrid"></div>
+      </section>
+
+      <section class="view" id="view-packs">
+        <header class="view-head">
+          <div>
+            <h1>Modpacks</h1>
+            <p class="muted">Werden als Prism-Instanz installiert und vor jedem Start automatisch aktualisiert.</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn ghost" id="btnRefreshPacks"><span class="ico" data-icon="refresh"></span>Neu prüfen</button>
+          </div>
+        </header>
+        <div class="pack-list" id="packList"></div>
+      </section>
+
+      <section class="view" id="view-waypoints">
+        <header class="view-head">
+          <div>
+            <h1>Wegpunkte</h1>
+            <p class="muted" id="wpIntro">Xaero-Wegpunkte mit deinem Team teilen.</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn ghost" id="btnWpRefresh"><span class="ico" data-icon="refresh"></span>Aktualisieren</button>
+            <button class="btn" id="btnWpSync"><span class="ico" data-icon="sync"></span>Jetzt synchronisieren</button>
+          </div>
+        </header>
+
+        <div class="card wp-status" id="wpStatus"></div>
+        <div class="wp-log" id="wpLog"></div>
+
+        <h2 class="section-title">Welten</h2>
+        <div class="wp-worlds" id="wpWorlds"></div>
+
+        <h2 class="section-title">Automatisch über Prism</h2>
+        <p class="muted wp-hint">Prism ruft den Launcher vor dem Spielstart (holt neue Wegpunkte) und nach dem Beenden
+          (lädt deine hoch) auf – egal ob du über diesen Launcher oder direkt in Prism startest.</p>
+        <div class="wp-hooks" id="wpHooks"></div>
+
+        <h2 class="section-title">So teilst du einen Wegpunkt</h2>
+        <div class="card wp-howto" id="wpHowto"></div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <header class="view-head">
+          <div>
+            <h1>Einstellungen</h1>
+            <p class="muted" id="appVersion"></p>
+          </div>
+        </header>
+
+        <div class="card settings">
+          <h3>Prism Launcher</h3>
+          <div class="prism-status" id="prismStatus"></div>
+
+          <label class="field">
+            <span>Programm (prismlauncher.exe)</span>
+            <div class="row">
+              <input class="input" id="setPrismExe" placeholder="Automatisch erkennen">
+              <button class="btn ghost" id="pickExe">Durchsuchen</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>Datenordner</span>
+            <div class="row">
+              <input class="input" id="setPrismData" placeholder="Automatisch erkennen">
+              <button class="btn ghost" id="pickData">Ordner</button>
+            </div>
+          </label>
+          <div class="row">
+            <button class="btn ghost" id="btnOpenPrism"><span class="ico" data-icon="external"></span>Prism öffnen</button>
+            <button class="btn ghost" id="btnOpenData"><span class="ico" data-icon="folder"></span>Datenordner öffnen</button>
+          </div>
+        </div>
+
+        <div class="card settings">
+          <h3>Wegpunkt-Sync</h3>
+          <label class="field">
+            <span>Sync-Server</span>
+            <input class="input" id="setWpUrl" placeholder="https://wegpunkte.example.net">
+          </label>
+          <label class="field">
+            <span>Team-Schlüssel</span>
+            <input class="input" id="setWpToken" type="password" autocomplete="off" placeholder="vom Server-Betreiber">
+          </label>
+          <label class="field">
+            <span>Geteiltes Xaero-Set</span>
+            <input class="input" id="setWpSet" placeholder="Team">
+          </label>
+          <label class="check"><input type="checkbox" id="setWpAll"> Alle Wegpunkte teilen (nicht nur das Set) – Todespunkte bleiben privat</label>
+          <div class="row">
+            <button class="btn ghost" id="btnWpTest"><span class="ico" data-icon="sync"></span>Verbindung testen</button>
+          </div>
+        </div>
+
+        <div class="card settings">
+          <h3>Spielstart</h3>
+          <label class="field">
+            <span>Nach dem Start</span>
+            <select class="input" id="setAfterLaunch">
+              <option value="minimize">Launcher minimieren</option>
+              <option value="keep">Launcher offen lassen</option>
+              <option value="close">Launcher schließen</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="setAutoUpdate"> Modpacks vor dem Start automatisch aktualisieren</label>
+          <label class="check"><input type="checkbox" id="setJoinServer"> Beim Start eines Modpacks direkt dessen Server betreten</label>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>

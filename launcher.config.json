@@ -1,0 +1,21 @@
+{
+  "brand": {
+    "name": "MyLauncher",
+    "tagline": "Powered by Prism",
+    "accent": "#7c5cff"
+  },
+  "newsUrl": "",
+  "news": [
+    {
+      "title": "Willkommen im Launcher",
+      "date": "2026-10-18",
+      "body": "Deine Prism-Instanzen werden automatisch erkannt. Unter „Wegpunkte“ teilst du Xaero-Wegpunkte mit deinem Team. News, Modpacks und Server stellst du in launcher.config.json ein."
+    }
+  ],
+  "packs": [],
+  "servers": [
+    { "name": "gaming.byrki.dev", "address": "gaming.byrki.dev", "instance": "26.2" }
+  ],
+  "hiddenInstances": ["OPSUCHT"],
+  "waypointServer": ""
+}
