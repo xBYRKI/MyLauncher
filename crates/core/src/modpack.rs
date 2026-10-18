@@ -444,6 +444,250 @@ struct Todo {
     keep: bool,
 }
 
+// ---------- Abgleich: Vorschau, Integrität, fremde Dateien ----------
+
+/// Was beim nächsten Sync mit einer Datei passieren würde.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeKind {
+    /// Neu im Pack.
+    Add,
+    /// Im Pack durch eine andere Fassung ersetzt.
+    Update,
+    /// Lokal beschädigt, gelöscht oder von Hand geändert – wird wiederhergestellt.
+    Repair,
+    /// Nicht mehr im Pack – wird entfernt.
+    Remove,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Change {
+    pub path: String,
+    pub kind: ChangeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// Datei im Spielordner, die nicht aus dem Manifest kommt – meist selbst installierte Mods.
+/// Wird vom Sync nie angefasst, hier aber sichtbar gemacht (hilft bei der Fehlersuche).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Extra {
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackPlan {
+    pub source: String,
+    pub name: String,
+    pub instance_id: String,
+    pub version: String,
+    pub installed_version: Option<String>,
+    /// Alles, was der Sync anfassen würde.
+    pub changes: Vec<Change>,
+    /// Dateien, die schon stimmen.
+    pub unchanged: usize,
+    /// Zu ladende Bytes, soweit das Manifest Größen angibt.
+    pub download_bytes: u64,
+    pub extras: Vec<Extra>,
+    /// Es gibt mehr fremde Dateien, als aufgelistet sind.
+    pub extras_truncated: bool,
+}
+
+/// Ordner, in denen fremde Dateien interessant sind.
+const EXTRA_DIRS: &[&str] = &["mods", "resourcepacks", "shaderpacks"];
+const EXTRA_LIMIT: usize = 60;
+
+fn scan_extras(game: &Path, managed: &HashSet<String>) -> (Vec<Extra>, bool) {
+    let mut out: Vec<Extra> = vec![];
+    let mut truncated = false;
+    for dir in EXTRA_DIRS {
+        let mut stack = vec![game.join(dir)];
+        while let Some(current) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // .index/.cache gehören Prism bzw. Loadern, .part sind halbe Downloads.
+                if name.starts_with('.') || name.ends_with(".part") {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let Ok(rel) = path.strip_prefix(game) else {
+                    continue;
+                };
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if managed.contains(&rel) {
+                    continue;
+                }
+                if out.len() >= EXTRA_LIMIT {
+                    truncated = true;
+                    continue;
+                }
+                out.push(Extra {
+                    path: rel,
+                    size: entry.metadata().map(|m| m.len()).unwrap_or(0),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    (out, truncated)
+}
+
+/// Ergebnis der Prüfphase – von Vorschau und Sync gemeinsam genutzt, damit die
+/// Vorschau nie etwas anderes anzeigt, als der Sync dann tut.
+struct Work {
+    todo: Vec<Todo>,
+    /// Dateien, die schon stimmen (Pfad -> SHA1); wird beim Sync um die Downloads ergänzt.
+    managed: BTreeMap<String, String>,
+    changes: Vec<Change>,
+    unchanged: usize,
+    /// Verwaltete Dateien, die nicht mehr im Manifest stehen.
+    removals: Vec<String>,
+}
+
+type OnCheck<'a> = &'a (dyn Fn(usize, usize, &str) + Send + Sync);
+
+async fn examine(
+    game: &Path,
+    manifest: &Manifest,
+    old_files: &BTreeMap<String, String>,
+    on_check: OnCheck<'_>,
+) -> Result<Work> {
+    let mut work = Work {
+        todo: vec![],
+        managed: BTreeMap::new(),
+        changes: vec![],
+        unchanged: 0,
+        removals: vec![],
+    };
+    let total = manifest.files.len();
+    for (i, f) in manifest.files.iter().enumerate() {
+        on_check(i, total, &f.path);
+        let target = game.join(relative_path(&f.path)?);
+        let keep = f.overwrite == Some(false);
+        let exists = target.exists();
+        if exists {
+            // Vorgabedateien (options.txt o. ä.) gehören nach dem Anlegen dem Spieler.
+            if keep {
+                work.unchanged += 1;
+                continue;
+            }
+            if let Some(expected) = &f.sha1 {
+                if sha1_file(&target).await?.eq_ignore_ascii_case(expected) {
+                    work.managed.insert(f.path.clone(), expected.to_lowercase());
+                    work.unchanged += 1;
+                    continue;
+                }
+            }
+        }
+        // Stand der letzten Installation entscheidet, ob das Pack die Datei geändert hat
+        // (Update) oder ob sie hier lokal abweicht (Repair).
+        let known = old_files.get(&f.path);
+        let kind = match (known, &f.sha1) {
+            (None, _) => ChangeKind::Add,
+            (Some(old), Some(want)) if old.eq_ignore_ascii_case(want) => ChangeKind::Repair,
+            (Some(_), Some(_)) => ChangeKind::Update,
+            // Ohne Prüfsumme im Manifest lässt sich das nicht unterscheiden.
+            (Some(_), None) => ChangeKind::Update,
+        };
+        work.changes.push(Change {
+            path: f.path.clone(),
+            kind,
+            size: f.size,
+        });
+        work.todo.push(Todo {
+            file: f.clone(),
+            target,
+            keep,
+        });
+    }
+
+    // Was wir verwaltet haben, aber nicht mehr im Manifest steht, wird entfernt.
+    let wanted: HashSet<&String> = manifest
+        .files
+        .iter()
+        .filter(|f| f.overwrite != Some(false))
+        .map(|f| &f.path)
+        .collect();
+    for rel in old_files.keys().filter(|r| !wanted.contains(r)) {
+        work.removals.push(rel.clone());
+        if relative_path(rel).is_ok_and(|p| game.join(p).exists()) {
+            work.changes.push(Change {
+                path: rel.clone(),
+                kind: ChangeKind::Remove,
+                size: None,
+            });
+        }
+    }
+    work.changes.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.path.cmp(&b.path)));
+    Ok(work)
+}
+
+/// Abgleich ohne Schreibzugriff: zeigt, was ein Sync tun würde, prüft dabei alle
+/// verwalteten Dateien per SHA1 und listet fremde Dateien auf.
+pub async fn plan_pack(
+    prism: &Prism,
+    source: &str,
+    on_progress: impl Fn(Progress) + Send + Sync,
+) -> Result<PackPlan> {
+    let (manifest, _) = load_manifest(source).await?;
+    let dir = prism.instances_dir.join(&manifest.instance_id);
+    let game = prism::game_dir(&dir);
+    let state = prism::read_json(&dir.join(STATE_FILE));
+    let installed_version = state
+        .as_ref()
+        .and_then(|s| s["version"].as_str().map(String::from));
+    let old_files: BTreeMap<String, String> = state
+        .and_then(|s| serde_json::from_value(s["files"].clone()).ok())
+        .unwrap_or_default();
+
+    let work = examine(&game, &manifest, &old_files, &|done, total, file| {
+        on_progress(Progress {
+            phase: "check",
+            done,
+            total,
+            file: file.into(),
+            bytes: 0,
+            total_bytes: 0,
+        })
+    })
+    .await?;
+
+    let managed_paths: HashSet<String> = manifest
+        .files
+        .iter()
+        .map(|f| f.path.replace('\\', "/"))
+        .collect();
+    let (extras, extras_truncated) = if game.is_dir() {
+        scan_extras(&game, &managed_paths)
+    } else {
+        (vec![], false)
+    };
+
+    Ok(PackPlan {
+        download_bytes: work.todo.iter().filter_map(|t| t.file.size).sum(),
+        changes: work.changes,
+        unchanged: work.unchanged,
+        source: source.into(),
+        name: manifest.name,
+        instance_id: manifest.instance_id,
+        version: manifest.version,
+        installed_version,
+        extras,
+        extras_truncated,
+    })
+}
+
 /// Installiert/aktualisiert ein Pack als Prism-Instanz.
 pub async fn sync_pack(
     prism: &Prism,
@@ -474,31 +718,16 @@ pub async fn sync_pack(
         }
     };
 
-    // 1) Prüfen, welche Dateien fehlen oder veraltet sind
-    let mut todo = vec![];
-    let mut managed = BTreeMap::new();
-    let total = manifest.files.len();
-    for (i, f) in manifest.files.iter().enumerate() {
-        progress("check", i, total, &f.path, 0, 0);
-        let target = game.join(relative_path(&f.path)?);
-        let keep = f.overwrite == Some(false);
-        if target.exists() {
-            if keep {
-                continue;
-            }
-            if let Some(expected) = &f.sha1 {
-                if sha1_file(&target).await?.eq_ignore_ascii_case(expected) {
-                    managed.insert(f.path.clone(), expected.to_lowercase());
-                    continue;
-                }
-            }
-        }
-        todo.push(Todo {
-            file: f.clone(),
-            target,
-            keep,
-        });
-    }
+    // 1) Prüfen, welche Dateien fehlen oder veraltet sind – gleiche Logik wie die Vorschau
+    let Work {
+        todo,
+        mut managed,
+        removals,
+        ..
+    } = examine(&game, &manifest, &old_files, &|done, total, file| {
+        progress("check", done, total, file, 0, 0)
+    })
+    .await?;
 
     // 2) Herunterladen (parallel)
     let total_bytes: u64 = todo.iter().filter_map(|t| t.file.size).sum();
@@ -540,9 +769,8 @@ pub async fn sync_pack(
     }
 
     // 3) Aus dem Pack entfernte Dateien löschen (nur, was wir selbst verwaltet haben)
-    let current: HashSet<&String> = managed.keys().collect();
     let mut removed = 0;
-    for rel in old_files.keys().filter(|r| !current.contains(r)) {
+    for rel in &removals {
         let Ok(rel_path) = relative_path(rel) else {
             continue;
         };
@@ -571,4 +799,157 @@ pub async fn sync_pack(
         downloaded: count,
         removed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Fester Name je Test: der nächste Lauf räumt ihn auf, statt neue Ordner anzulegen.
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mylauncher-pack-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(game: &Path, rel: &str, text: &str) -> String {
+        let path = game.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        hex::encode(Sha1::digest(text.as_bytes()))
+    }
+
+    fn file(path: &str, sha1: &str) -> PackFile {
+        PackFile {
+            path: path.into(),
+            url: path.into(),
+            sha1: Some(sha1.into()),
+            size: Some(10),
+            overwrite: None,
+        }
+    }
+
+    fn manifest(files: Vec<PackFile>) -> Manifest {
+        Manifest {
+            format_version: 1,
+            id: "test".into(),
+            name: "Test".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            instance_id: "Test".into(),
+            minecraft: "1.21.4".into(),
+            loader: LoaderSpec::default(),
+            server: String::new(),
+            memory: None,
+            files,
+        }
+    }
+
+    async fn plan(game: &Path, m: &Manifest, old: &[(&str, &str)]) -> Work {
+        let old: BTreeMap<String, String> =
+            old.iter().map(|(p, s)| (p.to_string(), s.to_string())).collect();
+        examine(game, m, &old, &|_, _, _| {}).await.unwrap()
+    }
+
+    fn kind(work: &Work, path: &str) -> Option<ChangeKind> {
+        work.changes.iter().find(|c| c.path == path).map(|c| c.kind)
+    }
+
+    #[tokio::test]
+    async fn neue_datei_ist_ein_zugang() {
+        let game = tmp("add");
+        let m = manifest(vec![file("mods/neu.jar", "0".repeat(40).as_str())]);
+        let work = plan(&game, &m, &[]).await;
+        assert_eq!(kind(&work, "mods/neu.jar"), Some(ChangeKind::Add));
+        assert_eq!(work.todo.len(), 1);
+        assert_eq!(work.unchanged, 0);
+    }
+
+    #[tokio::test]
+    async fn passende_datei_bleibt_unberuehrt() {
+        let game = tmp("same");
+        let sha = write(&game, "mods/gut.jar", "inhalt");
+        let work = plan(&game, &manifest(vec![file("mods/gut.jar", &sha)]), &[]).await;
+        assert!(work.changes.is_empty());
+        assert_eq!(work.unchanged, 1);
+        assert_eq!(work.managed.get("mods/gut.jar"), Some(&sha));
+    }
+
+    /// Lokal verändert, aber das Pack hat die Datei nicht angerührt -> Reparatur.
+    #[tokio::test]
+    async fn lokale_abweichung_ist_eine_reparatur() {
+        let game = tmp("repair");
+        write(&game, "mods/kaputt.jar", "beschaedigt");
+        let soll = hex::encode(Sha1::digest(b"original"));
+        let work = plan(&game, &manifest(vec![file("mods/kaputt.jar", &soll)]), &[("mods/kaputt.jar", &soll)]).await;
+        assert_eq!(kind(&work, "mods/kaputt.jar"), Some(ChangeKind::Repair));
+    }
+
+    /// Gelöschte Datei, die wir installiert hatten, ist ebenfalls eine Reparatur.
+    #[tokio::test]
+    async fn geloeschte_datei_wird_repariert() {
+        let game = tmp("deleted");
+        let soll = hex::encode(Sha1::digest(b"original"));
+        let work = plan(&game, &manifest(vec![file("mods/weg.jar", &soll)]), &[("mods/weg.jar", &soll)]).await;
+        assert_eq!(kind(&work, "mods/weg.jar"), Some(ChangeKind::Repair));
+    }
+
+    /// Das Pack liefert eine andere Fassung als beim letzten Mal -> Update.
+    #[tokio::test]
+    async fn neue_fassung_im_pack_ist_ein_update() {
+        let game = tmp("update");
+        write(&game, "mods/alt.jar", "alte fassung");
+        let alt = hex::encode(Sha1::digest(b"alte fassung"));
+        let neu = hex::encode(Sha1::digest(b"neue fassung"));
+        let work = plan(&game, &manifest(vec![file("mods/alt.jar", &neu)]), &[("mods/alt.jar", &alt)]).await;
+        assert_eq!(kind(&work, "mods/alt.jar"), Some(ChangeKind::Update));
+    }
+
+    #[tokio::test]
+    async fn aus_dem_pack_entfernte_datei_wird_geloescht() {
+        let game = tmp("remove");
+        let sha = write(&game, "mods/raus.jar", "egal");
+        let work = plan(&game, &manifest(vec![]), &[("mods/raus.jar", &sha)]).await;
+        assert_eq!(kind(&work, "mods/raus.jar"), Some(ChangeKind::Remove));
+        assert_eq!(work.removals, vec!["mods/raus.jar".to_string()]);
+    }
+
+    /// Fehlt die Datei schon auf der Platte, wird sie nicht als Änderung angezeigt,
+    /// bleibt aber in der Löschliste (Zustandsdatei muss sie loswerden).
+    #[tokio::test]
+    async fn bereits_fehlende_loeschung_wird_nicht_angezeigt() {
+        let game = tmp("remove-missing");
+        let work = plan(&game, &manifest(vec![]), &[("mods/schon-weg.jar", &"0".repeat(40))]).await;
+        assert!(work.changes.is_empty());
+        assert_eq!(work.removals.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn vorgabedatei_bleibt_dem_spieler() {
+        let game = tmp("keep");
+        write(&game, "options.txt", "eigene einstellungen");
+        let mut f = file("options.txt", &"0".repeat(40));
+        f.overwrite = Some(false);
+        let work = plan(&game, &manifest(vec![f]), &[]).await;
+        assert!(work.changes.is_empty(), "Vorgabedatei darf nicht überschrieben werden");
+        assert!(work.managed.is_empty(), "und gehört nicht in die Verwaltung");
+        assert_eq!(work.unchanged, 1);
+    }
+
+    #[test]
+    fn fremde_mods_werden_erkannt() {
+        let game = tmp("extras");
+        write(&game, "mods/pack-mod.jar", "a");
+        write(&game, "mods/selbst-installiert.jar", "bb");
+        write(&game, "mods/.index/pack.json", "c");
+        write(&game, "mods/unten/tief.jar", "d");
+        write(&game, "config/egal.toml", "e");
+        let managed = HashSet::from(["mods/pack-mod.jar".to_string()]);
+        let (extras, truncated) = scan_extras(&game, &managed);
+        let paths: Vec<&str> = extras.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["mods/selbst-installiert.jar", "mods/unten/tief.jar"]);
+        assert_eq!(extras[0].size, 2);
+        assert!(!truncated);
+    }
 }

@@ -45,6 +45,16 @@ pub struct ServerRef {
     pub instance: Option<String>,
 }
 
+/// Selbst-Update. Wird **nur** aus der eingebauten Config gelesen – siehe [`update_config`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdateConfig {
+    /// URL einer `update.json`. Leer = Selbst-Update aus.
+    pub feed: String,
+    /// SHA1-Thumbprint unseres Code-Signing-Zertifikats. Ohne ihn wird nicht aktualisiert.
+    pub signer_thumbprint: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LauncherConfig {
@@ -95,6 +105,8 @@ pub struct Settings {
     /// `minimize` | `keep` | `close`
     pub after_launch: String,
     pub auto_update_packs: bool,
+    /// Beim Start und im Hintergrund nach einer neuen Launcher-Version sehen.
+    pub auto_update_launcher: bool,
     pub join_server: bool,
     pub waypoints: WaypointSettings,
 }
@@ -107,6 +119,7 @@ impl Default for Settings {
             account: String::new(),
             after_launch: "minimize".into(),
             auto_update_packs: true,
+            auto_update_launcher: true,
             join_server: true,
             waypoints: WaypointSettings::default(),
         }
@@ -146,6 +159,22 @@ pub fn load_launcher_config() -> LauncherConfig {
         merge(&mut value, &over);
     }
     serde_json::from_value(value).unwrap_or_default()
+}
+
+/// Update-Einstellungen – absichtlich **nur** aus der eingebauten Config.
+///
+/// Die Datei in `%APPDATA%` darf hier nicht mitreden: wer Feed-URL und Thumbprint
+/// ersetzen kann, kann dem Launcher jede beliebige Exe als Update unterschieben.
+/// Zum Testen gegen einen anderen Feed gibt es `MYLAUNCHER_UPDATE_FEED`.
+pub fn update_config() -> UpdateConfig {
+    let value: Value =
+        serde_json::from_str(BUNDLED_CONFIG).unwrap_or(Value::Object(Default::default()));
+    let mut cfg: UpdateConfig =
+        serde_json::from_value(value["update"].clone()).unwrap_or_default();
+    if let Some(feed) = std::env::var_os("MYLAUNCHER_UPDATE_FEED") {
+        cfg.feed = feed.to_string_lossy().into_owned();
+    }
+    cfg
 }
 
 pub fn load_settings() -> Settings {

@@ -24,7 +24,10 @@ const L = {
   openFolder: (instanceId) => invoke('open_folder', { instanceId: instanceId ?? null }),
   packs: () => invoke('packs'),
   syncPack: (source) => invoke('sync_pack', { source }),
+  packPlan: (source) => invoke('pack_plan', { source }),
   playPack: (source) => invoke('play_pack', { source }),
+  updateStatus: () => invoke('update_status'),
+  updateInstall: () => invoke('update_install'),
   news: () => invoke('news'),
   serverStatus: (address) => invoke('server_status', { address }),
   pickFile: () => invoke('pick_file'),
@@ -36,6 +39,7 @@ const L = {
   waypointTest: () => invoke('waypoint_test'),
   onInstancesChanged: (cb) => listen('instances-changed', debounce(() => cb(), 400)),
   onPackProgress: (cb) => listen('pack-progress', (e) => cb(e.payload)),
+  onUpdateProgress: (cb) => listen('update-progress', (e) => cb(e.payload)),
   onFocus: (cb) => window.addEventListener('focus', debounce(cb, 300)),
 };
 
@@ -50,6 +54,10 @@ const state = {
   packs: [],
   busy: new Set(),     // laufende Pack-Syncs (manifest-URL)
   progress: {},        // manifest-URL -> letzter Fortschritt
+  update: null,        // Launcher-Update: Ergebnis der letzten Prüfung
+  updateBusy: false,
+  updateChecking: false,
+  updateProgress: null,
 };
 
 // ---------- Helfer ----------
@@ -245,6 +253,241 @@ L.onPackProgress((p) => {
   }
 });
 
+// ---------- Dialog ----------
+
+function closeModal() {
+  const modal = $('#modal');
+  modal.hidden = true;
+  modal.replaceChildren();
+}
+
+function openModal({ title, subtitle, body, actions }) {
+  const modal = $('#modal');
+  modal.replaceChildren(h('div', { class: 'modal-box' },
+    h('div', { class: 'modal-head' },
+      h('div', { class: 'modal-title' }, title),
+      subtitle ? h('div', { class: 'modal-sub' }, subtitle) : null),
+    h('div', { class: 'modal-body' }, ...body),
+    h('div', { class: 'modal-foot' }, ...actions)));
+  modal.hidden = false;
+}
+
+// ---------- Modpack-Abgleich ----------
+
+const CHANGE_LABEL = {
+  add: ['Neu', '+'],
+  update: ['Aktualisiert', '~'],
+  repair: ['Wiederhergestellt', '!'],
+  remove: ['Entfernt', '−'],
+};
+const DIFF_LIMIT = 80;
+
+function diffRow(kind, mark, path, size) {
+  return h('div', { class: 'diff-row' },
+    h('span', { class: `diff-mark ${kind}` }, mark),
+    h('span', { class: 'path', title: path }, path),
+    h('span', { class: 'size' }, size ? fmtBytes(size) : ''));
+}
+
+function diffGroup(kind, changes) {
+  const list = changes.filter((c) => c.kind === kind);
+  if (!list.length) return null;
+  const [label, mark] = CHANGE_LABEL[kind];
+  const rest = list.length - DIFF_LIMIT;
+  return h('div', { class: 'diff-group' },
+    h('div', { class: 'diff-head' }, `${label} (${list.length})`),
+    ...list.slice(0, DIFF_LIMIT).map((c) => diffRow(kind, mark, c.path, c.size)),
+    rest > 0 ? h('div', { class: 'diff-more' }, `… und ${rest} weitere`) : null);
+}
+
+function planSubtitle(plan) {
+  const version = !plan.installedVersion
+    ? `v${plan.version} · noch nicht installiert`
+    : plan.installedVersion === plan.version
+      ? `Version ${plan.version}`
+      : `${plan.installedVersion} → ${plan.version}`;
+  const parts = [version];
+  if (plan.changes.length) parts.push(`${plan.changes.length} Änderung${plan.changes.length === 1 ? '' : 'en'}`);
+  if (plan.downloadBytes) parts.push(`${fmtBytes(plan.downloadBytes)} zu laden`);
+  parts.push(`${plan.unchanged} unverändert`);
+  return parts.join(' · ');
+}
+
+function planDialog(pack, plan) {
+  const body = Object.keys(CHANGE_LABEL).map((kind) => diffGroup(kind, plan.changes)).filter(Boolean);
+  if (!body.length) {
+    body.push(h('div', { class: 'modal-sub', style: { marginTop: '0' } },
+      plan.unchanged
+        ? `Alles stimmt: ${plan.unchanged} Datei${plan.unchanged === 1 ? '' : 'en'} wie im Modpack.`
+        : 'Dieses Modpack enthält keine Dateien.'));
+  }
+  if (plan.extras.length) {
+    const rest = plan.extrasTruncated ? ' (nur die ersten)' : '';
+    body.push(h('div', { class: 'diff-group' },
+      h('div', { class: 'diff-head' }, `Eigene Dateien${rest} (${plan.extras.length}${plan.extrasTruncated ? '+' : ''})`),
+      h('div', { class: 'diff-more', style: { marginTop: '0', marginBottom: '6px' } },
+        'Nicht aus dem Modpack – werden nie überschrieben oder gelöscht.'),
+      ...plan.extras.map((e) => diffRow('', '·', e.path, e.size))));
+  }
+  const actions = [h('button', { class: 'btn ghost', onClick: closeModal }, 'Schließen')];
+  if (plan.changes.length) {
+    actions.push(h('button', {
+      class: 'btn',
+      onClick: () => {
+        closeModal();
+        playPack(pack, true);
+      },
+    }, icon('download'), plan.installedVersion ? 'Jetzt übernehmen' : 'Installieren'));
+  }
+  openModal({ title: `Abgleich – ${plan.name}`, subtitle: planSubtitle(plan), body, actions });
+}
+
+// Prüft das Pack (SHA1 über alle verwalteten Dateien) und zeigt das Ergebnis,
+// ohne etwas zu verändern.
+async function reviewPack(pack) {
+  if (state.busy.has(pack.source)) return;
+  state.busy.add(pack.source);
+  state.progress[pack.source] = { phase: 'check', done: 0, total: 0 };
+  renderPackViews();
+  try {
+    planDialog(pack, await L.packPlan(pack.source));
+  } catch (err) {
+    toast(errMsg(err), 'error');
+  } finally {
+    state.busy.delete(pack.source);
+    delete state.progress[pack.source];
+    renderPackViews();
+  }
+}
+
+// ---------- Launcher-Update ----------
+
+function updateProgressText(p) {
+  if (!p) return 'Starte …';
+  if (p.phase === 'verify') return 'Prüfe Prüfsumme und Signatur …';
+  return p.totalBytes
+    ? `Lade ${fmtBytes(p.bytes)} / ${fmtBytes(p.totalBytes)}`
+    : `Lade ${fmtBytes(p.bytes)}`;
+}
+
+function updateProgressPercent(p) {
+  if (!p) return 0;
+  if (p.phase === 'verify') return 100;
+  return p.totalBytes ? Math.min(100, (p.bytes / p.totalBytes) * 100) : 0;
+}
+
+L.onUpdateProgress((p) => {
+  state.updateProgress = p;
+  const el = document.querySelector('[data-progress="launcher-update"]');
+  if (!el) return;
+  el.querySelector('.progress-fill').style.width = `${updateProgressPercent(p)}%`;
+  el.querySelector('.progress-label').textContent = updateProgressText(p);
+});
+
+function renderUpdate() {
+  const box = $('#updateState');
+  if (!box) return;
+  const u = state.update;
+  $('#setAutoUpdateLauncher').checked = state.settings.autoUpdateLauncher;
+  const version = `${state.info.brand.name} ${state.info.appVersion}`;
+
+  if (state.updateBusy) {
+    const p = state.updateProgress;
+    box.replaceChildren(
+      h('div', { class: 'update-line' }, version, h('span', { class: 'badge accent' }, `Update auf ${u.version}`)),
+      h('div', { class: 'progress', 'data-progress': 'launcher-update', style: { maxWidth: 'none' } },
+        h('div', { class: 'progress-bar' }, h('div', { class: 'progress-fill', style: { width: `${updateProgressPercent(p)}%` } })),
+        h('div', { class: 'progress-label' }, updateProgressText(p))));
+    return;
+  }
+
+  if (!u) {
+    // Noch nicht geprüft – etwa wenn die automatische Suche aus ist.
+    box.replaceChildren(
+      h('div', { class: 'update-line' }, version,
+        state.updateChecking ? h('span', { class: 'muted' }, 'Suche …') : null),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn ghost', onClick: () => checkUpdate() }, icon('refresh'), 'Nach Updates suchen')));
+    return;
+  }
+  if (!u.configured) {
+    box.replaceChildren(h('div', { class: 'update-line' }, version),
+      h('div', { class: 'muted' }, 'Für diesen Launcher ist kein Update-Server hinterlegt.'));
+    return;
+  }
+
+  const children = [h('div', { class: 'update-line' }, version,
+    u.error
+      ? h('span', { class: 'badge warn' }, 'Prüfung fehlgeschlagen')
+      : u.available
+        ? h('span', { class: 'badge accent' }, `Update auf ${u.version}`)
+        : h('span', { class: 'badge ok' }, 'Aktuell'),
+    u.available && u.pubDate ? h('span', { class: 'badge' }, u.pubDate) : null,
+    u.available && u.size ? h('span', { class: 'badge' }, fmtBytes(u.size)) : null)];
+  if (u.error) children.push(h('div', { class: 'pack-error' }, u.error));
+  if (u.available && u.notes) children.push(h('div', { class: 'update-notes' }, u.notes));
+  children.push(h('div', { class: 'row' },
+    h('button', { class: 'btn ghost', onClick: () => checkUpdate() }, icon('refresh'), 'Nach Updates suchen'),
+    u.available
+      ? h('button', { class: 'btn', onClick: installUpdate }, icon('download'), `Auf ${u.version} aktualisieren`)
+      : null));
+  box.replaceChildren(...children);
+}
+
+function renderUpdateBadge() {
+  const btn = document.querySelector('.nav-item[data-view="settings"]');
+  let badge = btn.querySelector('.count');
+  if (!badge) {
+    badge = h('span', { class: 'count' });
+    btn.append(badge);
+  }
+  const available = !!state.update?.available;
+  badge.textContent = available ? '1' : '';
+  badge.classList.toggle('alert', available);
+  badge.title = available ? `Launcher-Update ${state.update.version} verfügbar` : '';
+}
+
+// `quiet` = Hintergrundprüfung: meldet sich nur, wenn eine neue Version auftaucht.
+async function checkUpdate({ quiet = false } = {}) {
+  if (state.updateBusy || state.updateChecking) return;
+  const known = state.update?.available ? state.update.version : null;
+  state.updateChecking = true;
+  renderUpdate();
+  try {
+    state.update = await L.updateStatus();
+  } catch (err) {
+    state.updateChecking = false;
+    renderUpdate();
+    if (!quiet) toast(errMsg(err), 'error');
+    return;
+  }
+  state.updateChecking = false;
+  renderUpdate();
+  renderUpdateBadge();
+  const u = state.update;
+  if (u.available && u.version !== known) {
+    toast(`Launcher-Update ${u.version} verfügbar – unter „Einstellungen“ installieren.`, 'ok');
+  } else if (!quiet && !u.available && !u.error && u.configured) {
+    toast(`${state.info.brand.name} ${u.current} ist aktuell.`, 'ok');
+  }
+}
+
+async function installUpdate() {
+  if (state.updateBusy || !state.update?.available) return;
+  state.updateBusy = true;
+  state.updateProgress = { phase: 'download', bytes: 0, totalBytes: state.update.size || 0 };
+  renderUpdate();
+  try {
+    const version = await L.updateInstall();
+    toast(`Installer für ${version} gestartet – der Launcher beendet sich jetzt.`, 'ok');
+  } catch (err) {
+    toast(errMsg(err), 'error');
+    state.updateBusy = false;
+    state.updateProgress = null;
+    renderUpdate();
+  }
+}
+
 // ---------- Render: Sidebar ----------
 
 function renderBrand() {
@@ -253,7 +496,15 @@ function renderBrand() {
   document.title = brand.name;
   $('#brandName').textContent = brand.name;
   $('#brandTag').textContent = brand.tagline || '';
-  $('#logoMark').textContent = brand.name.slice(0, 1).toUpperCase();
+  // App-Icon als Logo; fehlt die Datei, bleibt der Anfangsbuchstabe als Rückfall.
+  const mark = $('#logoMark');
+  const logo = h('img', { src: 'icon.png', alt: '' });
+  logo.addEventListener('error', () => {
+    mark.classList.remove('has-img');
+    mark.textContent = brand.name.slice(0, 1).toUpperCase();
+  });
+  mark.classList.add('has-img');
+  mark.replaceChildren(logo);
   $('#appVersion').textContent = `${brand.name} ${state.info.appVersion}`;
   for (const el of document.querySelectorAll('[data-icon]')) el.replaceWith(icon(el.dataset.icon));
 }
@@ -481,7 +732,11 @@ function renderInstances() {
 
 function renderPacks() {
   const list = $('#packList');
-  $('#packCount').textContent = state.packs.length || '';
+  const count = $('#packCount');
+  const pending = state.packs.filter((p) => !p.error && !p.upToDate).length;
+  count.textContent = state.packs.length || '';
+  count.classList.toggle('alert', pending > 0);
+  count.title = pending ? `${pending} Modpack${pending === 1 ? '' : 's'} nicht aktuell` : '';
   if (!state.packs.length) {
     list.replaceChildren(h('div', { class: 'empty' },
       'Noch keine Modpacks. Erzeuge ein Manifest mit ', h('code', {}, 'npm run manifest'),
@@ -510,8 +765,11 @@ function renderPacks() {
             : h('span', { class: 'badge warn' }, `v${pack.version} · nicht installiert`))),
       h('div', { class: 'pack-side' },
         busy ? progressEl(pack.source) : h('div', { class: 'row' },
-          h('button', { class: 'btn ghost', onClick: () => playPack(pack, true) },
-            icon(installed ? 'refresh' : 'download'), installed ? (pack.upToDate ? 'Prüfen' : 'Aktualisieren') : 'Installieren'),
+          h('button', {
+            class: 'btn ghost',
+            title: 'Dateien mit dem Modpack vergleichen – zeigt erst, was sich ändert',
+            onClick: () => reviewPack(pack),
+          }, icon(installed ? 'refresh' : 'download'), installed ? (pack.upToDate ? 'Prüfen' : 'Aktualisieren') : 'Installieren'),
           h('button', { class: 'btn', onClick: () => playPack(pack) }, icon('play'), 'Spielen'))));
   }));
 }
@@ -656,6 +914,7 @@ function renderSettings() {
   $('#setPrismData').placeholder = `Automatisch: ${p.defaultDataDir}`;
   $('#setAfterLaunch').value = s.afterLaunch;
   $('#setAutoUpdate').checked = s.autoUpdatePacks;
+  renderUpdate();
   $('#setJoinServer').checked = s.joinServer;
   $('#setWpUrl').value = s.waypoints.serverUrl;
   $('#setWpUrl').placeholder = state.info.waypointServer || 'https://wegpunkte.example.net';
@@ -747,9 +1006,33 @@ function bindUi() {
   $('#setAfterLaunch').addEventListener('change', (e) => saveSetting({ afterLaunch: e.target.value }));
   $('#setAutoUpdate').addEventListener('change', (e) => saveSetting({ autoUpdatePacks: e.target.checked }));
   $('#setJoinServer').addEventListener('change', (e) => saveSetting({ joinServer: e.target.checked }));
+  $('#setAutoUpdateLauncher').addEventListener('change', (e) => saveSetting({ autoUpdateLauncher: e.target.checked }));
+
+  // Dialog: Klick auf den Hintergrund und Esc schließen.
+  $('#modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
 
   L.onInstancesChanged(loadInstances);
-  L.onFocus(() => refreshPrism().catch(() => {}));
+  L.onFocus(() => {
+    refreshPrism().catch(() => {});
+    backgroundCheck();
+  });
+}
+
+// Hintergrundprüfung: neue Modpack- und Launcher-Versionen von selbst bemerken.
+// Nicht öfter als alle 5 Minuten, egal wie oft das Fenster den Fokus bekommt.
+const CHECK_INTERVAL = 15 * 60 * 1000;
+let lastCheck = 0;
+
+async function backgroundCheck() {
+  if (Date.now() - lastCheck < 5 * 60 * 1000) return;
+  lastCheck = Date.now();
+  await loadPacks().catch(() => {});
+  if (state.settings.autoUpdateLauncher) await checkUpdate({ quiet: true });
 }
 
 async function init() {
@@ -761,7 +1044,16 @@ async function init() {
   await loadPacks();
   renderServers();
   loadWaypoints();
+  renderUpdateBadge();
+  if (state.settings.autoUpdateLauncher) {
+    lastCheck = Date.now();
+    checkUpdate({ quiet: true });
+  }
   setInterval(renderServers, 60000);
+  setInterval(() => {
+    lastCheck = 0;
+    backgroundCheck();
+  }, CHECK_INTERVAL);
 }
 
 init().catch((err) => toast(errMsg(err), 'error'));

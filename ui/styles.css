@@ -1,15 +1,18 @@
 :root {
-  --accent: #7c5cff;
+  /* Markenfarben: Navy #002E70 als Fläche, Gold #FFD43F als Akzent.
+     --accent wird beim Start aus launcher.config.json überschrieben. */
+  --accent: #ffd43f;
   --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
-  --bg: #0e0f14;
-  --bg-2: #14161d;
-  --panel: #181a23;
-  --panel-2: #1f2230;
-  --line: #2a2d3c;
-  --text: #ecedf5;
-  --muted: #8d90a6;
+  --on-accent: #001a3f;
+  --bg: #001a3f;
+  --bg-2: #002252;
+  --panel: #002e70;
+  --panel-2: #003c8e;
+  --line: #0a4091;
+  --text: #f2f6ff;
+  --muted: #9db4d9;
   --ok: #3ddc84;
-  --warn: #ffb547;
+  --warn: #ffa32e;
   --err: #ff5d6c;
   --radius: 14px;
   color-scheme: dark;
@@ -71,6 +74,8 @@ button, input, select { font: inherit; color: inherit; }
   background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 45%, #000));
   box-shadow: 0 6px 20px var(--accent-soft);
 }
+.logo-mark.has-img { background: none; box-shadow: none; border-radius: 0; }
+.logo-mark img { width: 100%; height: 100%; object-fit: contain; }
 .logo-name { font-weight: 700; font-size: 15px; }
 .logo-tag { color: var(--muted); font-size: 12px; }
 
@@ -144,7 +149,7 @@ h3 { margin: 0 0 14px; font-size: 15px; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   padding: 9px 16px; border-radius: 10px;
-  border: 1px solid transparent; background: var(--accent); color: #fff;
+  border: 1px solid transparent; background: var(--accent); color: var(--on-accent);
   font-weight: 600; cursor: pointer; white-space: nowrap;
   transition: filter .15s, transform .1s, background .15s;
 }
@@ -176,7 +181,7 @@ select.input { cursor: pointer; }
   background:
     radial-gradient(600px 300px at 85% 10%, color-mix(in srgb, var(--accent) 45%, transparent), transparent 70%),
     radial-gradient(500px 260px at 0% 100%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
-    linear-gradient(135deg, #1b1d2a, #12131a);
+    linear-gradient(135deg, var(--panel-2), var(--bg-2));
   display: flex; flex-direction: column; justify-content: flex-end; gap: 14px;
 }
 .hero::after {
@@ -217,7 +222,7 @@ select.input { cursor: pointer; }
 .news-body { padding: 16px 18px; }
 .news-date { font-size: 12px; color: var(--muted); }
 .news-title { margin: 2px 0 6px; font-size: 16px; font-weight: 700; }
-.news-text { color: #c4c6d6; white-space: pre-line; user-select: text; }
+.news-text { color: #cbd9f0; white-space: pre-line; user-select: text; }
 .news .btn { margin-top: 12px; }
 
 .server-list, .recent-list { display: flex; flex-direction: column; gap: 10px; }
@@ -301,7 +306,7 @@ select.input { cursor: pointer; }
 .wp-hook { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
 .wp-hook .grow { flex: 1; min-width: 0; }
 .wp-warn { grid-column: 1 / -1; padding: 10px 14px; border-radius: 10px; color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
-.wp-howto ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: #c4c6d6; }
+.wp-howto ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: #cbd9f0; }
 kbd { padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--bg-2); font-family: Consolas, monospace; font-size: 12px; }
 
 .switch { position: relative; width: 42px; height: 24px; flex-shrink: 0; cursor: pointer; }
@@ -309,7 +314,7 @@ kbd { padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); backg
 .slider { position: absolute; inset: 0; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); transition: background .15s; pointer-events: none; }
 .slider::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
 .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
-.switch input:checked + .slider::after { transform: translateX(18px); background: #fff; }
+.switch input:checked + .slider::after { transform: translateX(18px); background: var(--on-accent); }
 
 /* ---------- Toasts ---------- */
 
@@ -333,3 +338,49 @@ kbd { padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); backg
 @media (max-width: 1000px) {
   .home-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------- Dialog (Modpack-Abgleich) ---------- */
+
+.modal {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, .55);
+  animation: fade .15s ease;
+}
+.modal[hidden] { display: none; }
+.modal-box {
+  width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .5);
+}
+.modal-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+.modal-title { font-size: 17px; font-weight: 700; }
+.modal-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
+.modal-body { padding: 16px 20px; overflow-y: auto; }
+.modal-foot { padding: 14px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+
+.diff-group + .diff-group { margin-top: 16px; }
+.diff-head { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.diff-row { display: flex; gap: 10px; font-size: 13px; padding: 2px 0; user-select: text; }
+.diff-row .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-row .size { color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.diff-mark { width: 12px; flex-shrink: 0; font-weight: 700; text-align: center; }
+.diff-mark.add { color: var(--ok); }
+.diff-mark.update { color: var(--accent); }
+.diff-mark.repair { color: var(--warn); }
+.diff-mark.remove { color: var(--err); }
+.diff-more { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* ---------- Launcher-Update ---------- */
+
+.update-state { display: flex; flex-direction: column; gap: 10px; }
+.update-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.update-notes {
+  white-space: pre-wrap; user-select: text;
+  color: var(--muted); font-size: 13px;
+  max-height: 170px; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.count.alert { color: var(--warn); }

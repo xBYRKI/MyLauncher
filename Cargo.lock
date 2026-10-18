@@ -2211,9 +2211,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
  "sysinfo",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

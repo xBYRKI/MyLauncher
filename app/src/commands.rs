@@ -1,13 +1,15 @@
 //! Tauri-Befehle für die Oberfläche. Die eigentliche Logik steckt in `launcher-core`.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use launcher_core::config::{self, Settings};
-use launcher_core::modpack::{self, PackStatus, SyncResult};
+use launcher_core::modpack::{self, PackPlan, PackStatus, SyncResult};
 use launcher_core::ping::{self, ServerStatus};
 use launcher_core::prism::{self, Account, Instance, Prism};
+use launcher_core::update::{self, UpdateStatus};
 use launcher_core::waypoints::{self, Health, SyncOptions};
 use launcher_core::xaero;
 use notify::Watcher;
@@ -26,6 +28,7 @@ fn err(e: impl std::fmt::Display) -> String {
 struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     busy_packs: Mutex<HashSet<String>>,
+    updating: AtomicBool,
 }
 
 fn current_prism() -> Prism {
@@ -245,6 +248,22 @@ async fn sync_pack(app: AppHandle, source: String) -> CmdResult<SyncResult> {
     do_sync_pack(&app, &source).await
 }
 
+/// Abgleich ohne Schreibzugriff: was würde ein Sync ändern, stimmen alle Dateien noch,
+/// welche Mods hat der Spieler selbst dazugelegt.
+#[tauri::command]
+async fn pack_plan(app: AppHandle, source: String) -> CmdResult<PackPlan> {
+    ensure_configured_pack(&source)?;
+    let emitter = app.clone();
+    let src = source.clone();
+    modpack::plan_pack(&current_prism(), &source, move |p| {
+        let mut payload = serde_json::to_value(&p).unwrap_or_default();
+        payload["source"] = json!(src);
+        let _ = emitter.emit("pack-progress", payload);
+    })
+    .await
+    .map_err(err)
+}
+
 #[tauri::command]
 async fn play_pack(app: AppHandle, source: String) -> CmdResult<SyncResult> {
     let settings = config::load_settings();
@@ -271,6 +290,53 @@ async fn play_pack(app: AppHandle, source: String) -> CmdResult<SyncResult> {
     prism::launch(&p, &result.instance_id, &settings.account, &server).map_err(err)?;
     after_launch(&app);
     Ok(result)
+}
+
+// ---------- Launcher-Update ----------
+
+#[tauri::command]
+async fn update_status(app: AppHandle) -> UpdateStatus {
+    update::check(&app.package_info().version.to_string()).await
+}
+
+async fn run_update(app: &AppHandle) -> CmdResult<String> {
+    let cfg = config::update_config();
+    if cfg.feed.trim().is_empty() {
+        return Err("Für diesen Launcher ist kein Update-Server hinterlegt.".into());
+    }
+    let feed = update::fetch_feed(&cfg.feed).await.map_err(err)?;
+    let current = app.package_info().version.to_string();
+    if !update::is_newer(&feed.version, &current) {
+        return Err(format!("Version {current} ist bereits aktuell."));
+    }
+    let emitter = app.clone();
+    let installer = update::download(&cfg, &feed, move |p| {
+        let _ = emitter.emit("update-progress", p);
+    })
+    .await
+    .map_err(err)?;
+    update::start_installer(&installer).map_err(err)?;
+
+    // Der Installer kann die laufende Exe nicht ersetzen – also Platz machen,
+    // sobald die Oberfläche die Rückmeldung bekommen hat.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        handle.exit(0);
+    });
+    Ok(feed.version)
+}
+
+/// Lädt das Update, prüft Prüfsumme und Signatur, startet den Installer und beendet
+/// den Launcher. Gibt die Version zurück, die installiert wird.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> CmdResult<String> {
+    if app.state::<AppState>().updating.swap(true, Ordering::SeqCst) {
+        return Err("Das Update läuft bereits.".into());
+    }
+    let result = run_update(&app).await;
+    app.state::<AppState>().updating.store(false, Ordering::SeqCst);
+    result
 }
 
 // ---------- News & Server ----------
@@ -504,7 +570,10 @@ pub fn run() {
             open_folder,
             packs,
             sync_pack,
+            pack_plan,
             play_pack,
+            update_status,
+            update_install,
             news,
             server_status,
             waypoint_overview,

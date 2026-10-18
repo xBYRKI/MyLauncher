@@ -168,6 +168,12 @@
           </div>
         </div>
 
+        <div class="card settings" id="updateCard">
+          <h3>Launcher</h3>
+          <div class="update-state" id="updateState"></div>
+          <label class="check"><input type="checkbox" id="setAutoUpdateLauncher"> Automatisch nach Launcher-Updates suchen</label>
+        </div>
+
         <div class="card settings">
           <h3>Spielstart</h3>
           <label class="field">
@@ -185,6 +191,7 @@
     </main>
   </div>
 
+  <div class="modal" id="modal" hidden></div>
   <div class="toasts" id="toasts"></div>
   <script src="app.js"></script>
 </body>

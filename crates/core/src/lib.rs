@@ -1,11 +1,13 @@
 //! Launcher-Logik ohne UI: Prism-Brücke, Modpack-Sync, Server-Ping und Xaero-Wegpunkt-Sync.
 //! Wird von der Tauri-App und vom Hook-Modus (`--xaero-sync`) gemeinsam genutzt.
 
+pub mod authenticode;
 pub mod config;
 pub mod ini;
 pub mod modpack;
 pub mod ping;
 pub mod prism;
+pub mod update;
 pub mod waypoints;
 pub mod xaero;
 

@@ -2,7 +2,7 @@
   "brand": {
     "name": "MyLauncher",
     "tagline": "Powered by Prism",
-    "accent": "#7c5cff"
+    "accent": "#FFD43F"
   },
   "newsUrl": "",
   "news": [
@@ -14,8 +14,12 @@
   ],
   "packs": [],
   "servers": [
-    { "name": "gaming.byrki.dev", "address": "gaming.byrki.dev", "instance": "26.2" }
+    { "name": "gaming.stephanides-it.at", "address": "gaming.stephanides-it.at", "instance": "26.2" }
   ],
   "hiddenInstances": ["OPSUCHT"],
-  "waypointServer": ""
+  "waypointServer": "",
+  "update": {
+    "feed": "https://github.com/xBYRKI/MyLauncher/releases/latest/download/update.json",
+    "signerThumbprint": "7C72A42764582F617CF3BD4F22231ED974B3EA61"
+  }
 }
