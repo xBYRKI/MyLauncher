@@ -1,37 +1,26 @@
-//! Tauri-Befehle für die Oberfläche. Die eigentliche Logik steckt in `launcher-core`.
+//! Aufgaben für die Oberfläche. Die eigentliche Logik steckt in `launcher-core`;
+//! hier wird sie nur so zugeschnitten, wie die UI sie braucht.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use launcher_core::config::{self, Settings};
-use launcher_core::modpack::{self, PackPlan, PackStatus, SyncResult};
-use launcher_core::ping::{self, ServerStatus};
+use launcher_core::modpack::{self, PackPlan, PackStatus, Progress, SyncResult};
 use launcher_core::prism::{self, Account, Instance, Prism};
 use launcher_core::update::{self, UpdateStatus};
 use launcher_core::waypoints::{self, Health, SyncOptions};
 use launcher_core::xaero;
-use notify::Watcher;
-use serde::Serialize;
-use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use serde_json::Value;
 
-type CmdResult<T> = Result<T, String>;
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn err(e: impl std::fmt::Display) -> String {
+pub type Res<T> = Result<T, String>;
+
+pub fn err(e: impl std::fmt::Display) -> String {
     // anyhow mit Ursachenkette, ohne Debug-Rauschen
     format!("{e:#}")
 }
 
-#[derive(Default)]
-struct AppState {
-    watcher: Mutex<Option<notify::RecommendedWatcher>>,
-    busy_packs: Mutex<HashSet<String>>,
-    updating: AtomicBool,
-}
-
-fn current_prism() -> Prism {
+pub fn current_prism() -> Prism {
     prism::resolve(&config::load_settings())
 }
 
@@ -39,40 +28,7 @@ fn hidden() -> Vec<String> {
     config::load_launcher_config().hidden_instances
 }
 
-/// Instanzordner beobachten und die UI bei Änderungen benachrichtigen.
-fn rewatch(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let handle = app.clone();
-    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = handle.emit("instances-changed", ());
-        }
-    })
-    .ok()
-    .and_then(|mut w| {
-        w.watch(
-            &current_prism().instances_dir,
-            notify::RecursiveMode::NonRecursive,
-        )
-        .ok()
-        .map(|_| w)
-    });
-    *state.watcher.lock().unwrap() = watcher;
-}
-
-fn after_launch(app: &AppHandle) {
-    match config::load_settings().after_launch.as_str() {
-        "close" => app.exit(0),
-        "minimize" => {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.minimize();
-            }
-        }
-        _ => {}
-    }
-}
-
-fn ensure_configured_pack(source: &str) -> CmdResult<()> {
+fn ensure_configured_pack(source: &str) -> Res<()> {
     // Nur in der Config eingetragene Manifeste dürfen in Prism installiert werden.
     if config::load_launcher_config()
         .packs
@@ -87,36 +43,19 @@ fn ensure_configured_pack(source: &str) -> CmdResult<()> {
 
 // ---------- Allgemein ----------
 
-#[tauri::command]
-fn app_info(app: AppHandle) -> Value {
-    let mut v = serde_json::to_value(config::load_launcher_config()).unwrap_or_default();
-    v["appVersion"] = json!(app.package_info().version.to_string());
-    v
+pub fn save_settings(patch: &Value) -> Res<Settings> {
+    config::patch_settings(patch).map_err(err)
 }
 
-#[tauri::command]
-fn get_settings() -> Settings {
-    config::load_settings()
-}
-
-#[tauri::command]
-fn set_settings(app: AppHandle, patch: Value) -> CmdResult<Settings> {
-    let settings = config::patch_settings(&patch).map_err(err)?;
-    rewatch(&app);
-    Ok(settings)
-}
-
-#[tauri::command]
-fn open_external(url: String) -> CmdResult<()> {
+pub fn open_external(url: &str) -> Res<()> {
     if url.starts_with("https://") || url.starts_with("http://") {
-        opener::open_browser(&url).map_err(err)
+        opener::open_browser(url).map_err(err)
     } else {
         Err("Nur http(s)-Links".into())
     }
 }
 
-#[tauri::command]
-async fn pick_file() -> Option<String> {
+pub async fn pick_file() -> Option<String> {
     let mut dialog = rfd::AsyncFileDialog::new().set_title("Prism Launcher auswählen");
     if cfg!(windows) {
         dialog = dialog.add_filter("Prism Launcher", &["exe"]);
@@ -127,31 +66,54 @@ async fn pick_file() -> Option<String> {
         .map(|f| f.path().to_string_lossy().into_owned())
 }
 
-#[tauri::command]
-async fn pick_dir() -> Option<String> {
+pub async fn pick_dir() -> Option<String> {
     rfd::AsyncFileDialog::new()
         .pick_folder()
         .await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
 
-// ---------- Prism ----------
-
-#[tauri::command]
-fn prism_status() -> Prism {
-    current_prism()
+/// Bild für Avatar oder News laden. Nur https, nur kleine Dateien.
+pub async fn fetch_image(url: &str) -> Res<Vec<u8>> {
+    if !url.starts_with("https://") {
+        return Err("Nur https-Bilder".into());
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(launcher_core::USER_AGENT)
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(err)?;
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(err)?
+        .bytes()
+        .await
+        .map_err(err)?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("Bild zu groß".into());
+    }
+    Ok(bytes.to_vec())
 }
 
-#[tauri::command]
-async fn instances() -> Vec<Instance> {
+// ---------- Prism ----------
+
+pub async fn prism_and_accounts() -> (Prism, Vec<Account>) {
+    tokio::task::spawn_blocking(|| {
+        let p = current_prism();
+        let accounts = prism::list_accounts(&p);
+        (p, accounts)
+    })
+    .await
+    .expect("Prism-Status")
+}
+
+pub async fn instances() -> Vec<Instance> {
     tokio::task::spawn_blocking(|| prism::list_instances(&current_prism(), &hidden()))
         .await
         .unwrap_or_default()
-}
-
-#[tauri::command]
-fn accounts() -> Vec<Account> {
-    prism::list_accounts(&current_prism())
 }
 
 /// Ohne Prism-Hooks wenigstens vor dem Start die geteilten Wegpunkte holen.
@@ -176,8 +138,7 @@ async fn pull_waypoints_if_needed(p: &Prism, instance_id: &str) {
     }
 }
 
-#[tauri::command]
-async fn launch(app: AppHandle, instance_id: String, server: Option<String>) -> CmdResult<()> {
+pub async fn launch(instance_id: String, server: Option<String>) -> Res<()> {
     let settings = config::load_settings();
     let p = current_prism();
     pull_waypoints_if_needed(&p, &instance_id).await;
@@ -186,21 +147,17 @@ async fn launch(app: AppHandle, instance_id: String, server: Option<String>) -> 
     } else {
         String::new()
     };
-    prism::launch(&p, &instance_id, &settings.account, &server).map_err(err)?;
-    after_launch(&app);
-    Ok(())
+    prism::launch(&p, &instance_id, &settings.account, &server).map_err(err)
 }
 
-#[tauri::command]
-fn show_in_prism(instance_id: Option<String>) -> CmdResult<()> {
-    prism::show(&current_prism(), instance_id.as_deref()).map_err(err)
+pub fn show_in_prism(instance_id: Option<&str>) -> Res<()> {
+    prism::show(&current_prism(), instance_id).map_err(err)
 }
 
-#[tauri::command]
-fn open_folder(instance_id: Option<String>) -> CmdResult<()> {
+pub fn open_folder(instance_id: Option<&str>) -> Res<()> {
     let p = current_prism();
     let target = match instance_id {
-        Some(id) => prism::instance_dir(&p, &id).map_err(err)?,
+        Some(id) => prism::instance_dir(&p, id).map_err(err)?,
         None => p.data_dir,
     };
     opener::open(&target).map_err(err)
@@ -208,8 +165,7 @@ fn open_folder(instance_id: Option<String>) -> CmdResult<()> {
 
 // ---------- Modpacks ----------
 
-#[tauri::command]
-async fn packs() -> Vec<PackStatus> {
+pub async fn packs() -> Vec<PackStatus> {
     let p = current_prism();
     let sources: Vec<String> = config::load_launcher_config()
         .packs
@@ -223,56 +179,40 @@ async fn packs() -> Vec<PackStatus> {
     out
 }
 
-async fn do_sync_pack(app: &AppHandle, source: &str) -> CmdResult<SyncResult> {
+pub async fn sync_pack(
+    source: &str,
+    on_progress: impl Fn(Progress) + Send + Sync + 'static,
+) -> Res<SyncResult> {
     ensure_configured_pack(source)?;
-    let state = app.state::<AppState>();
-    if !state.busy_packs.lock().unwrap().insert(source.to_string()) {
-        return Err("Dieses Modpack wird bereits aktualisiert".into());
-    }
     let brand = config::load_launcher_config().brand.name;
-    let emitter = app.clone();
-    let src = source.to_string();
-    let result = modpack::sync_pack(&current_prism(), source, &brand, move |p| {
-        let mut payload = serde_json::to_value(&p).unwrap_or_default();
-        payload["source"] = json!(src);
-        let _ = emitter.emit("pack-progress", payload);
-    })
-    .await
-    .map_err(err);
-    state.busy_packs.lock().unwrap().remove(source);
-    result
-}
-
-#[tauri::command]
-async fn sync_pack(app: AppHandle, source: String) -> CmdResult<SyncResult> {
-    do_sync_pack(&app, &source).await
+    modpack::sync_pack(&current_prism(), source, &brand, on_progress)
+        .await
+        .map_err(err)
 }
 
 /// Abgleich ohne Schreibzugriff: was würde ein Sync ändern, stimmen alle Dateien noch,
 /// welche Mods hat der Spieler selbst dazugelegt.
-#[tauri::command]
-async fn pack_plan(app: AppHandle, source: String) -> CmdResult<PackPlan> {
-    ensure_configured_pack(&source)?;
-    let emitter = app.clone();
-    let src = source.clone();
-    modpack::plan_pack(&current_prism(), &source, move |p| {
-        let mut payload = serde_json::to_value(&p).unwrap_or_default();
-        payload["source"] = json!(src);
-        let _ = emitter.emit("pack-progress", payload);
-    })
-    .await
-    .map_err(err)
+pub async fn pack_plan(
+    source: &str,
+    on_progress: impl Fn(Progress) + Send + Sync,
+) -> Res<PackPlan> {
+    ensure_configured_pack(source)?;
+    modpack::plan_pack(&current_prism(), source, on_progress)
+        .await
+        .map_err(err)
 }
 
-#[tauri::command]
-async fn play_pack(app: AppHandle, source: String) -> CmdResult<SyncResult> {
+pub async fn play_pack(
+    source: &str,
+    on_progress: impl Fn(Progress) + Send + Sync + 'static,
+) -> Res<SyncResult> {
     let settings = config::load_settings();
     let p = current_prism();
     let result = if settings.auto_update_packs {
-        do_sync_pack(&app, &source).await?
+        sync_pack(source, on_progress).await?
     } else {
-        ensure_configured_pack(&source)?;
-        let (m, _) = modpack::load_manifest(&source).await.map_err(err)?;
+        ensure_configured_pack(source)?;
+        let (m, _) = modpack::load_manifest(source).await.map_err(err)?;
         SyncResult {
             instance_id: m.instance_id,
             version: m.version,
@@ -288,61 +228,37 @@ async fn play_pack(app: AppHandle, source: String) -> CmdResult<SyncResult> {
         String::new()
     };
     prism::launch(&p, &result.instance_id, &settings.account, &server).map_err(err)?;
-    after_launch(&app);
     Ok(result)
 }
 
 // ---------- Launcher-Update ----------
 
-#[tauri::command]
-async fn update_status(app: AppHandle) -> UpdateStatus {
-    update::check(&app.package_info().version.to_string()).await
+pub async fn update_status() -> UpdateStatus {
+    update::check(VERSION).await
 }
 
-async fn run_update(app: &AppHandle) -> CmdResult<String> {
+/// Lädt das Update, prüft Prüfsumme und Signatur und startet den Installer.
+/// Gibt die Version zurück, die installiert wird – danach muss der Launcher sich beenden,
+/// sonst kann der Installer die laufende Exe nicht ersetzen.
+pub async fn update_install(on_progress: impl Fn(update::Progress)) -> Res<String> {
     let cfg = config::update_config();
     if cfg.feed.trim().is_empty() {
         return Err("Für diesen Launcher ist kein Update-Server hinterlegt.".into());
     }
     let feed = update::fetch_feed(&cfg.feed).await.map_err(err)?;
-    let current = app.package_info().version.to_string();
-    if !update::is_newer(&feed.version, &current) {
-        return Err(format!("Version {current} ist bereits aktuell."));
+    if !update::is_newer(&feed.version, VERSION) {
+        return Err(format!("Version {VERSION} ist bereits aktuell."));
     }
-    let emitter = app.clone();
-    let installer = update::download(&cfg, &feed, move |p| {
-        let _ = emitter.emit("update-progress", p);
-    })
-    .await
-    .map_err(err)?;
+    let installer = update::download(&cfg, &feed, on_progress)
+        .await
+        .map_err(err)?;
     update::start_installer(&installer).map_err(err)?;
-
-    // Der Installer kann die laufende Exe nicht ersetzen – also Platz machen,
-    // sobald die Oberfläche die Rückmeldung bekommen hat.
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        handle.exit(0);
-    });
     Ok(feed.version)
 }
 
-/// Lädt das Update, prüft Prüfsumme und Signatur, startet den Installer und beendet
-/// den Launcher. Gibt die Version zurück, die installiert wird.
-#[tauri::command]
-async fn update_install(app: AppHandle) -> CmdResult<String> {
-    if app.state::<AppState>().updating.swap(true, Ordering::SeqCst) {
-        return Err("Das Update läuft bereits.".into());
-    }
-    let result = run_update(&app).await;
-    app.state::<AppState>().updating.store(false, Ordering::SeqCst);
-    result
-}
+// ---------- News ----------
 
-// ---------- News & Server ----------
-
-#[tauri::command]
-async fn news() -> Vec<Value> {
+pub async fn news() -> Vec<Value> {
     let cfg = config::load_launcher_config();
     if cfg.news_url.is_empty() {
         return cfg.news;
@@ -357,53 +273,38 @@ async fn news() -> Vec<Value> {
     fetched.await.unwrap_or(cfg.news)
 }
 
-#[tauri::command]
-async fn server_status(address: String) -> ServerStatus {
-    ping::status(&address).await
-}
-
 // ---------- Wegpunkte ----------
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WorldInstance {
-    id: String,
-    name: String,
-    waypoints: usize,
-    shared: usize,
-    last_sync: Option<u64>,
+pub struct WorldInstance {
+    pub name: String,
+    pub waypoints: usize,
+    pub shared: usize,
+    pub last_sync: Option<u64>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WorldEntry {
-    folder: String,
-    display: String,
-    multiplayer: bool,
-    enabled: bool,
-    instances: Vec<WorldInstance>,
+pub struct WorldEntry {
+    pub folder: String,
+    pub display: String,
+    pub multiplayer: bool,
+    pub enabled: bool,
+    pub instances: Vec<WorldInstance>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HookInstance {
-    id: String,
-    name: String,
-    hooks: bool,
-    has_xaero: bool,
+pub struct HookInstance {
+    pub id: String,
+    pub name: String,
+    pub hooks: bool,
+    pub has_xaero: bool,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WaypointOverview {
-    worlds: Vec<WorldEntry>,
-    instances: Vec<HookInstance>,
-    prism_running: bool,
-    server_url: String,
+pub struct WaypointOverview {
+    pub worlds: Vec<WorldEntry>,
+    pub instances: Vec<HookInstance>,
+    pub prism_running: bool,
+    pub server_url: String,
 }
 
-#[tauri::command]
-async fn waypoint_overview() -> WaypointOverview {
+pub async fn waypoint_overview() -> WaypointOverview {
     tokio::task::spawn_blocking(|| {
         let settings = config::load_settings();
         let cfg = config::load_launcher_config();
@@ -437,7 +338,6 @@ async fn waypoint_overview() -> WaypointOverview {
                 };
                 entry.instances.push(WorldInstance {
                     last_sync: waypoints::last_synced(&game_dir, &w.folder),
-                    id: inst.id.clone(),
                     name: inst.name.clone(),
                     waypoints: w.waypoints,
                     shared: w.shared,
@@ -462,18 +362,15 @@ async fn waypoint_overview() -> WaypointOverview {
     .expect("Übersicht")
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SyncLine {
-    instance: String,
-    ok: bool,
-    message: String,
+pub struct SyncLine {
+    pub instance: String,
+    pub ok: bool,
+    pub message: String,
 }
 
-/// Jetzt synchronisieren – für eine Instanz oder alle. Laufende Spiele werden übersprungen,
+/// Jetzt synchronisieren – alle Instanzen. Laufende Spiele werden übersprungen,
 /// weil Xaero die Dateien beim Beenden sonst wieder überschreibt.
-#[tauri::command]
-async fn waypoint_sync(instance_id: Option<String>) -> CmdResult<Vec<SyncLine>> {
+pub async fn waypoint_sync() -> Res<Vec<SyncLine>> {
     let settings = config::load_settings();
     let cfg = config::load_launcher_config();
     let p = prism::resolve(&settings);
@@ -483,9 +380,6 @@ async fn waypoint_sync(instance_id: Option<String>) -> CmdResult<Vec<SyncLine>> 
     let opts = SyncOptions::new(&settings, &cfg, prism::player_name(&p, &settings)).map_err(err)?;
     let mut lines = vec![];
     for (inst, game_dir) in waypoints::instance_game_dirs(&p, &cfg.hidden_instances) {
-        if instance_id.as_ref().is_some_and(|id| id != &inst.id) {
-            continue;
-        }
         let root = xaero::minimap_root(&game_dir);
         if !settings
             .waypoints
@@ -528,59 +422,20 @@ async fn waypoint_sync(instance_id: Option<String>) -> CmdResult<Vec<SyncLine>> 
     Ok(lines)
 }
 
-#[tauri::command]
-fn waypoint_set_hooks(instance_id: String, enabled: bool) -> CmdResult<()> {
+pub fn waypoint_set_hooks(instance_id: &str, enabled: bool) -> Res<()> {
     if prism::is_prism_running() {
         return Err(
             "Bitte Prism Launcher zuerst schließen – sonst überschreibt Prism die Änderung.".into(),
         );
     }
-    let dir = prism::instance_dir(&current_prism(), &instance_id).map_err(err)?;
+    let dir = prism::instance_dir(&current_prism(), instance_id).map_err(err)?;
     let exe = std::env::current_exe().map_err(err)?;
     waypoints::set_hooks(&dir, &exe, enabled).map_err(err)
 }
 
-#[tauri::command]
-async fn waypoint_test() -> CmdResult<Health> {
+pub async fn waypoint_test() -> Res<Health> {
     let settings = config::load_settings();
     let cfg = config::load_launcher_config();
     let opts = SyncOptions::new(&settings, &cfg, String::new()).map_err(err)?;
     waypoints::test_connection(&opts).await.map_err(err)
-}
-
-pub fn run() {
-    tauri::Builder::default()
-        .manage(AppState::default())
-        .setup(|app| {
-            rewatch(app.handle());
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            app_info,
-            get_settings,
-            set_settings,
-            open_external,
-            pick_file,
-            pick_dir,
-            prism_status,
-            instances,
-            accounts,
-            launch,
-            show_in_prism,
-            open_folder,
-            packs,
-            sync_pack,
-            pack_plan,
-            play_pack,
-            update_status,
-            update_install,
-            news,
-            server_status,
-            waypoint_overview,
-            waypoint_sync,
-            waypoint_set_hooks,
-            waypoint_test,
-        ])
-        .run(tauri::generate_context!())
-        .expect("Fehler beim Starten der App");
 }

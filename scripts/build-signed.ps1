@@ -33,7 +33,9 @@ $Dist = Join-Path $Root 'dist'
 # Version und Update-Ziel kommen aus den Dateien, die auch in die Exe eingebaut werden –
 # so können update.json, Release-Tag und Launcher nicht auseinanderlaufen.
 function Get-ReleaseInfo {
-    $version = (Get-Content (Join-Path $Root 'app\tauri.conf.json') -Raw | ConvertFrom-Json).version
+    $cargo = Get-Content (Join-Path $Root 'Cargo.toml') -Raw
+    if ($cargo -notmatch '(?s)\[workspace\.package\].*?version\s*=\s*"([^"]+)"') { throw 'Version in Cargo.toml nicht gefunden.' }
+    $version = $Matches[1]
     $feed = (Get-Content (Join-Path $Root 'launcher.config.json') -Raw | ConvertFrom-Json).update.feed
     if (-not $feed) { throw 'launcher.config.json: update.feed ist leer – kein Update-Ziel bekannt.' }
     if ($feed -notmatch '^https://github\.com/([^/]+/[^/]+)/releases/') {
@@ -54,6 +56,18 @@ function Find-SignTool {
         Where-Object FullName -like '*\x64\*' | Sort-Object FullName | Select-Object -Last 1
     if (-not $tool) { throw 'signtool.exe nicht gefunden – Windows SDK installieren.' }
     return $tool.FullName
+}
+
+function Find-Makensis {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe'),
+        'C:\Program Files (x86)\NSIS\makensis.exe',
+        'C:\Program Files\NSIS\makensis.exe'
+    )
+    $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $found) { $found = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source }
+    if (-not $found) { throw 'makensis.exe nicht gefunden – NSIS installieren (https://nsis.sourceforge.io).' }
+    return $found
 }
 
 function Assert-SigningKey {
@@ -88,6 +102,7 @@ function Test-Signature([string]$SignTool, [string]$File) {
 }
 
 $signTool = Find-SignTool
+$makensis = Find-Makensis
 $release = Get-ReleaseInfo
 Write-Host "Version $($release.Version) für $($release.Repo)" -ForegroundColor Cyan
 if ($Publish) {
@@ -96,24 +111,19 @@ if ($Publish) {
 }
 Assert-SigningKey
 New-Item -ItemType Directory -Force $Dist | Out-Null
-$env:Path = "$(Split-Path $signTool);$env:Path"   # Tauri nutzt signtool aus dem PATH
-Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+$env:Path = "$(Split-Path $signTool);$env:Path"   # makensis signiert Installer und Uninstaller über signtool im PATH
 
-# 1) Launcher + Installer (Tauri signiert mylauncher.exe, den Installer und den Uninstaller)
-Push-Location (Join-Path $Root 'app')
-try {
-    cargo tauri build --config tauri.signed.conf.json
-    if ($LASTEXITCODE -ne 0) { throw 'cargo tauri build fehlgeschlagen' }
-} finally { Pop-Location }
-
-$installer = Get-ChildItem (Join-Path $Root 'target\release\bundle\nsis') -Filter '*-setup.exe' |
-    Sort-Object LastWriteTime | Select-Object -Last 1
-
-# Tauri signiert mylauncher.exe vor dem Bundling, stellt danach aber die unpatchte Datei wieder her –
-# die Signatur ist dort also weg. Im Installer steckt die signierte Kopie; die freistehende Exe
-# (fuer Entwicklung und den Hook-Modus) signieren wir hier noch einmal selbst.
+# 1) Launcher bauen und signieren, dann in den Installer packen
+cargo build --release -p mylauncher
+if ($LASTEXITCODE -ne 0) { throw 'Launcher-Build fehlgeschlagen' }
 $launcher = Join-Path $Root 'target\release\mylauncher.exe'
-Invoke-Sign $signTool $launcher 'MyLauncher'
+Invoke-Sign $signTool $launcher "Birkenfeld's Minecraft Launcher"
+
+$installerPath = Join-Path $Root "target\release\MyLauncher_$($release.Version)_x64-setup.exe"
+& $makensis -V2 "-DVERSION=$($release.Version)" "-DSRC=$(Split-Path $launcher)" "-DOUTFILE=$installerPath" `
+    "-DTHUMBPRINT=$Thumbprint" (Join-Path $Root 'installer\mylauncher.nsi')
+if ($LASTEXITCODE -ne 0) { throw 'makensis fehlgeschlagen' }
+$installer = Get-Item $installerPath
 $outputs = @($installer.FullName, $launcher)
 
 # 2) Zusatz-Tools

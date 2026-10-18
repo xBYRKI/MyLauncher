@@ -1,20 +1,22 @@
 // Release-Builds ohne Konsolenfenster (auch wenn Prism uns als Hook startet).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod commands;
+mod app;
+mod backend;
+mod theme;
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use launcher_core::{config, waypoints};
 
-fn main() {
+fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == waypoints::HOOK_FLAG) {
         run_hook(&args[pos + 1..]);
-        return;
+        return Ok(());
     }
-    commands::run();
+    app::run()
 }
 
 /// Von Prism aufgerufen: `mylauncher --xaero-sync <pre|post> <INST_MC_DIR>`.

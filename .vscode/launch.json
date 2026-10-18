@@ -1,0 +1,32 @@
+{
+  // F5: Launcher im Debugger (MSVC-Debugger aus der C/C++-Erweiterung)
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launcher debuggen",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/mylauncher.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Launcher: Bauen",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Hook-Modus debuggen (--xaero-sync pre)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/mylauncher.exe",
+      "args": ["--xaero-sync", "pre", "${input:gameDir}"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Launcher: Bauen",
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "gameDir",
+      "type": "promptString",
+      "description": "Spielordner der Instanz (…\\instances\\<Name>\\minecraft)"
+    }
+  ]
+}

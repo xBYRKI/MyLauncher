@@ -1,0 +1,96 @@
+{
+  // Strg+Umschalt+B = Bauen, alles andere über "Tasks: Run Task"
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "notes",
+      "type": "promptString",
+      "description": "Änderungstext für das Update (erscheint im Launcher)"
+    },
+    {
+      "id": "waypointToken",
+      "type": "promptString",
+      "description": "Team-Token für den lokalen Wegpunkt-Server (team:geheim)",
+      "default": "test:geheim"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "Launcher: Bauen",
+      "type": "shell",
+      "command": "cargo build -p mylauncher",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Launcher: Starten",
+      "type": "shell",
+      "command": "cargo run -p mylauncher",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Launcher: Release bauen",
+      "type": "shell",
+      "command": "cargo build --release -p mylauncher",
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Setup: Installer bauen (unsigniert)",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-setup.ps1",
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Release: Signiert bauen",
+      "detail": "Braucht SimplySign Desktop (angemeldet)",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed.ps1",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Release: Signiert bauen & veröffentlichen",
+      "detail": "Legt das GitHub-Release v<Version> an – der Launcher bietet es dann allen als Update an",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed.ps1 -Notes \"${input:notes}\" -Publish",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Prüfen: Tests",
+      "type": "shell",
+      "command": "cargo test --workspace",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Prüfen: Clippy",
+      "type": "shell",
+      "command": "cargo clippy --workspace --all-targets",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Wegpunkt-Server: lokal starten",
+      "type": "shell",
+      "command": "cargo run -p waypoint-server -- --bind 127.0.0.1:8787 --data target/waypoint-data --token ${input:waypointToken}",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Wegpunkt-Sync: Integrationstest",
+      "detail": "Erwartet den lokalen Wegpunkt-Server mit Token test:geheim",
+      "type": "shell",
+      "command": "cargo test -p launcher-core -- --ignored",
+      "options": {
+        "env": { "WAYPOINT_TEST_URL": "http://127.0.0.1:8787", "WAYPOINT_TEST_TOKEN": "geheim" }
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Packtool: Hilfe",
+      "type": "shell",
+      "command": "cargo run -p launcher-core --bin packtool",
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}

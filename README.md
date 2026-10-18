@@ -1,11 +1,11 @@
-# MyLauncher
+# Birkenfeld's Minecraft Launcher
 
-Eigener Minecraft-Launcher in **Rust** (Tauri 2). **Prism Launcher läuft darunter als Engine:**
-Prism übernimmt Microsoft-Login, Java, Loader-Installation und den Spielstart. MyLauncher liest Prisms Daten
+Eigener Minecraft-Launcher in **Rust** mit nativer Oberfläche (egui) im Minecraft-Stil. **Prism Launcher läuft darunter als Engine:**
+Prism übernimmt Microsoft-Login, Java, Loader-Installation und den Spielstart. Der Launcher liest Prisms Daten
 direkt, steuert Prism über dessen Kommandozeile und klinkt sich für den Xaero-Wegpunkt-Sync als Prism-Hook ein.
 
 ```
-MyLauncher (Tauri, Rust)
+mylauncher.exe (Rust, egui)
   ├─ liest     instances/*/instance.cfg, mmc-pack.json, accounts.json (nur Name/UUID)
   ├─ startet   prismlauncher --launch <Instanz> --profile <Konto> [--server <Adresse>]
   ├─ Modpacks  legt Prism-Instanzen an und hält Dateien per SHA1 aktuell
@@ -18,8 +18,9 @@ MyLauncher (Tauri, Rust)
 
 | Ordner | Inhalt |
 |---|---|
-| `app/` | Tauri-App (Befehle, Hook-Modus `--xaero-sync`) |
-| `ui/` | Oberfläche (HTML/CSS/JS, kein Build-Schritt) |
+| `app/` | Launcher-Oberfläche (egui/eframe, Minecraft-Optik) und Hook-Modus `--xaero-sync` |
+| `app/assets/` | Pixel-Schrift [Monocraft](https://github.com/IdreesInc/Monocraft) (SIL OFL 1.1) und Logo |
+| `installer/` | NSIS-Skript für den Installer |
 | `crates/core/` | Prism-Brücke, Modpack-Sync, Server-Ping, Xaero-Parser, Wegpunkt-Sync; `packtool` |
 | `crates/server/` | `waypoint-server` – Sync-Server für Wegpunkte |
 | `crates/protocol/` | Gemeinsame Typen von Launcher und Server |
@@ -29,9 +30,16 @@ MyLauncher (Tauri, Rust)
 ```bash
 cargo run -p mylauncher                  # Launcher (Entwicklung)
 cargo build --release -p mylauncher      # target/release/mylauncher.exe
-cargo install tauri-cli --version "^2"   # einmalig, für den Installer:
-cd app && cargo tauri build              # NSIS-Installer
+makensis /DVERSION=0.2.0 installer\mylauncher.nsi   # Installer (NSIS 3)
 cargo test -p launcher-core              # Tests
+```
+
+In VS Code liegen dieselben Schritte als Tasks bereit (`.vscode/tasks.json`): **Strg+Umschalt+B** baut,
+*Tasks: Run Task* bietet Starten, Release, Installer, signiertes Release/Veröffentlichen, Tests, Clippy,
+lokalen Wegpunkt-Server und Integrationstest. **F5** startet den Launcher im Debugger.
+
+```powershell
+.\scripts\build-setup.ps1               # unsignierter Installer zum Testen → dist\
 ```
 
 ### Signierte Veröffentlichung
@@ -73,7 +81,7 @@ ließe sich ein fremdes Update unterschieben. Zum Testen gegen einen anderen Fee
 .\scripts\build-signed.ps1 -Notes "Was neu ist" -Publish
 ```
 
-Das Skript baut und signiert, schreibt `dist\update.json` (Version aus `app/tauri.conf.json`, URL und
+Das Skript baut und signiert, schreibt `dist\update.json` (Version aus `Cargo.toml` → `[workspace.package]`, URL und
 Prüfsumme des Installers) und legt mit `gh` das Release `v<Version>` an. Das Repository muss öffentlich
 sein, sonst kann der Launcher die Dateien nicht laden. Ohne `-Publish` landet alles nur in `dist\`.
 
@@ -111,7 +119,7 @@ Wird in die Exe eingebaut. Eine Datei gleichen Namens in `%APPDATA%\MyLauncher\`
 
 ```json
 {
-  "brand":   { "name": "MyLauncher", "tagline": "Powered by Prism", "accent": "#7c5cff" },
+  "brand":   { "name": "Birkenfeld's Minecraft Launcher", "tagline": "Powered by Prism", "accent": "#7c5cff" },
   "newsUrl": "https://example.net/news.json",
   "news":    [ { "title": "…", "date": "2026-10-18", "body": "…", "image": "https://…", "url": "https://…" } ],
   "packs":   [ { "manifest": "https://example.net/pack/manifest.json" } ],

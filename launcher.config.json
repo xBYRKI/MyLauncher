@@ -1,6 +1,6 @@
 {
   "brand": {
-    "name": "MyLauncher",
+    "name": "Birkenfeld's Minecraft Launcher",
     "tagline": "Powered by Prism",
     "accent": "#FFD43F"
   },
@@ -14,7 +14,7 @@
   ],
   "packs": [],
   "servers": [
-    { "name": "gaming.stephanides-it.at", "address": "gaming.stephanides-it.at", "instance": "26.2" }
+    { "name": "Minecraft-Server", "address": "gaming.stephanides-it.at", "instance": "26.3" }
   ],
   "hiddenInstances": ["OPSUCHT"],
   "waypointServer": "",
