@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "mylauncher"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "mylauncher-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2963,7 +2963,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
 ]
