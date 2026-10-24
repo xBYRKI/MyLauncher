@@ -28,7 +28,7 @@ function Get-ServerConfig {
     if ($cfg.publicUrl -notmatch '^https?://[^/]+$') {
         throw "server.config.json: publicUrl muss wie https://launcher.example.net aussehen (ohne Pfad)."
     }
-    $defaults = [ordered]@{ port = 22; identityFile = ''; adminPassword = ''; waypointTokens = @();
+    $defaults = [ordered]@{ port = 22; identityFile = ''; adminPassword = '';
         proxy = 'caddy'; exposeAdmin = $false; tunnelPort = 18787 }
     foreach ($key in $defaults.Keys) {
         if ($null -eq $cfg.$key) { $cfg | Add-Member -NotePropertyName $key -NotePropertyValue $defaults[$key] }

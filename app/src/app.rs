@@ -20,7 +20,7 @@ use launcher_core::update::{self, UpdateStatus};
 use notify::Watcher;
 use serde_json::{json, Value};
 
-use crate::backend::{self, SyncLine, WaypointOverview, VERSION};
+use crate::backend::{self, VERSION};
 use crate::theme::{self, badge, muted, panel, panel_with, section, title, Icon, Kind, McButton};
 
 const TITLE_H: f32 = 36.0;
@@ -53,7 +53,6 @@ pub fn run() -> eframe::Result {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tone {
-    Info,
     Ok,
     Error,
 }
@@ -73,8 +72,6 @@ enum Msg {
     Update(UpdateStatus),
     UpdateProgress(update::Progress),
     UpdateDone(backend::Res<String>),
-    Waypoints(WaypointOverview),
-    WpSynced(backend::Res<Vec<SyncLine>>),
     LaunchDone(String),
     Launched,
     Toast(Tone, String),
@@ -126,7 +123,6 @@ enum View {
     Home,
     Instances,
     Packs,
-    Waypoints,
     Settings,
 }
 
@@ -141,9 +137,6 @@ struct Toast {
 struct Form {
     prism_exe: String,
     prism_data: String,
-    wp_url: String,
-    wp_token: String,
-    wp_set: String,
 }
 
 impl Form {
@@ -151,9 +144,6 @@ impl Form {
         Self {
             prism_exe: s.prism_exe.clone(),
             prism_data: s.prism_data_dir.clone(),
-            wp_url: s.waypoints.server_url.clone(),
-            wp_token: s.waypoints.token.clone(),
-            wp_set: s.waypoints.shared_set.clone(),
         }
     }
 }
@@ -172,9 +162,6 @@ pub struct App {
     packs: Arc<Vec<PackStatus>>,
     news: Option<Arc<Vec<Value>>>,
     servers: Vec<Option<ServerStatus>>,
-    wp: Option<Arc<WaypointOverview>>,
-    wp_log: Vec<SyncLine>,
-    wp_syncing: bool,
 
     /// Laufende Pack-Vorgänge (Manifest-URL) und ihr letzter Fortschritt
     busy: HashSet<String>,
@@ -228,9 +215,6 @@ impl App {
             instances: Arc::default(),
             packs: Arc::default(),
             news: None,
-            wp: None,
-            wp_log: vec![],
-            wp_syncing: false,
             busy: HashSet::new(),
             progress: HashMap::new(),
             launching: HashSet::new(),
@@ -258,7 +242,6 @@ impl App {
         app.load_news();
         app.load_packs();
         app.ping_servers();
-        app.load_waypoints();
         if app.settings.auto_update_launcher {
             app.check_update(true);
         }
@@ -333,10 +316,6 @@ impl App {
     /// Packs, News und Server vom eigenen Server holen (falls `remoteConfig` gesetzt ist).
     fn refresh_remote(&self) {
         self.spawn(async { Msg::RemoteConfig(backend::refresh_remote_config().await) });
-    }
-
-    fn load_waypoints(&self) {
-        self.spawn(async { Msg::Waypoints(backend::waypoint_overview().await) });
     }
 
     fn ping_servers(&mut self) {
@@ -501,49 +480,6 @@ impl App {
         });
     }
 
-    fn toggle_world(&mut self, folder: &str, on: bool) {
-        let mut worlds = self.settings.waypoints.worlds.clone();
-        worlds.retain(|w| w != folder);
-        if on {
-            worlds.push(folder.to_string());
-        }
-        self.save(json!({ "waypoints": { "worlds": worlds } }));
-        self.load_waypoints();
-    }
-
-    fn toggle_hooks(&mut self, id: &str, name: &str, on: bool) {
-        match backend::waypoint_set_hooks(id, on) {
-            Ok(()) => self.toast(
-                Tone::Ok,
-                if on {
-                    format!("{name}: Wegpunkte werden bei Start und Ende synchronisiert")
-                } else {
-                    format!("{name}: Auto-Sync aus")
-                },
-            ),
-            Err(e) => self.toast(Tone::Error, e),
-        }
-        self.load_waypoints();
-        self.load_instances();
-    }
-
-    fn test_waypoints(&self) {
-        self.spawn(async {
-            match backend::waypoint_test().await {
-                Ok(h) => Msg::Toast(Tone::Ok, format!("Verbunden – Team „{}“", h.team)),
-                Err(e) => Msg::Toast(Tone::Error, e),
-            }
-        });
-    }
-
-    fn sync_waypoints(&mut self) {
-        if self.wp_syncing {
-            return;
-        }
-        self.wp_syncing = true;
-        self.spawn(async { Msg::WpSynced(backend::waypoint_sync().await) });
-    }
-
     fn pick(&self, exe: bool) {
         self.spawn(async move {
             let path = if exe { backend::pick_file().await } else { backend::pick_dir().await };
@@ -626,22 +562,6 @@ impl App {
                     self.update_progress = None;
                 }
             },
-            Msg::Waypoints(wp) => self.wp = Some(Arc::new(wp)),
-            Msg::WpSynced(r) => {
-                self.wp_syncing = false;
-                match r {
-                    Ok(lines) => {
-                        if lines.is_empty() {
-                            self.toast(Tone::Info, "Keine freigegebene Welt in deinen Instanzen gefunden.");
-                        } else if lines.iter().all(|l| l.ok) {
-                            self.toast(Tone::Ok, "Wegpunkte synchronisiert");
-                        }
-                        self.wp_log = lines;
-                    }
-                    Err(e) => self.toast(Tone::Error, e),
-                }
-                self.load_waypoints();
-            }
             Msg::LaunchDone(id) => {
                 self.launching.remove(&id);
             }
@@ -949,13 +869,11 @@ impl App {
 
     fn ui_sidebar(&mut self, ui: &mut Ui) {
         let pending = self.packs.iter().filter(|p| p.error.is_none() && !p.up_to_date).count();
-        let wp_count = self.wp.as_ref().map(|w| w.worlds.iter().filter(|w| w.enabled).count()).unwrap_or(0);
         let update_available = self.update.as_ref().is_some_and(|u| u.available);
         let nav = [
             (View::Home, "Start", Icon::Home, String::new(), false),
             (View::Instances, "Instanzen", Icon::Grid, count(self.instances.len()), false),
             (View::Packs, "Modpacks", Icon::Chest, count(self.packs.len()), pending > 0),
-            (View::Waypoints, "Wegpunkte", Icon::Compass, count(wp_count), false),
             (View::Settings, "Einstellungen", Icon::Gear, if update_available { "1".into() } else { String::new() }, update_available),
         ];
         let w = ui.available_width();
@@ -968,9 +886,6 @@ impl App {
             }
             if resp.clicked() {
                 self.view = view;
-                if view == View::Waypoints {
-                    self.load_waypoints();
-                }
             }
         }
 
@@ -1327,10 +1242,6 @@ impl App {
                         if inst.managed_by.is_some() {
                             badge(ui, "Modpack", theme::GOLD);
                         }
-                        if inst.waypoint_hooks {
-                            badge(ui, "Wegpunkt-Sync", theme::AQUA)
-                                .on_hover_text("Xaero-Wegpunkte werden bei Start/Ende synchronisiert");
-                        }
                         if let Some(g) = &inst.group {
                             badge(ui, g, theme::GRAY);
                         }
@@ -1375,7 +1286,7 @@ impl App {
         if packs.is_empty() {
             return empty(
                 ui,
-                "Noch keine Modpacks. Erzeuge ein Manifest mit packtool und trage es in launcher.config.json unter „packs“ ein.",
+                "Noch keine Modpacks. Lege ein Modpack in der Admin-Oberfläche des Launcher-Servers an (/admin/) und veröffentliche es – es erscheint dann automatisch hier.",
             );
         }
         for pack in packs.iter() {
@@ -1509,166 +1420,6 @@ impl App {
         }
     }
 
-    // ----- Wegpunkte -----
-
-    fn ui_waypoints(&mut self, ui: &mut Ui) {
-        let ws = self.settings.waypoints.clone();
-        let set = if ws.shared_set.is_empty() { "Team".to_string() } else { ws.shared_set.clone() };
-        let intro = if ws.share_all {
-            "Alle Wegpunkte der freigegebenen Welten werden mit deinem Team geteilt (Todespunkte bleiben privat).".to_string()
-        } else {
-            format!("Wegpunkte im Xaero-Set „{set}“ werden geteilt – alle anderen bleiben privat.")
-        };
-        let (mut refresh, mut sync) = (false, false);
-        let syncing = self.wp_syncing;
-        view_head(ui, "Wegpunkte", &intro, |ui| {
-            let label = if syncing { "Synchronisiere …" } else { "Jetzt synchronisieren" };
-            sync = ui.add(McButton::play(label).icon(Icon::Refresh).enabled(!syncing)).clicked();
-            refresh = ui.add(McButton::new("Aktualisieren").icon(Icon::Refresh)).clicked();
-        });
-        if refresh {
-            self.load_waypoints();
-        }
-        if sync {
-            self.sync_waypoints();
-        }
-        let Some(wp) = self.wp.clone() else {
-            return empty(ui, "Lade …");
-        };
-
-        let configured = !wp.server_url.is_empty() && !ws.token.is_empty();
-        panel_with(ui, if configured { theme::GREEN } else { theme::RED }, |ui| {
-            ui.horizontal(|ui| {
-                theme::dot(ui, configured);
-                ui.vertical(|ui| {
-                    title(ui, if configured { "Sync-Server eingerichtet" } else { "Sync-Server fehlt" }, 13.0, theme::WHITE);
-                    muted(ui, if configured { wp.server_url.as_str() } else { "Trage Server-URL und Team-Schlüssel in den Einstellungen ein." });
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if configured {
-                        if ui.add(McButton::new("Verbindung testen")).clicked() {
-                            self.test_waypoints();
-                        }
-                    } else if ui.add(McButton::new("Einrichten").icon(Icon::Gear)).clicked() {
-                        self.view = View::Settings;
-                    }
-                });
-            });
-        });
-
-        if !self.wp_log.is_empty() {
-            panel(ui, |ui| {
-                for l in &self.wp_log {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(if l.ok { "✔" } else { "✖" }).color(if l.ok { theme::GREEN } else { theme::RED }));
-                        ui.label(RichText::new(&l.instance).strong());
-                        ui.label(RichText::new(&l.message).color(if l.ok { theme::TEXT } else { theme::RED }));
-                    });
-                }
-            });
-        }
-
-        section(ui, "Welten");
-        if wp.worlds.is_empty() {
-            empty(ui, "Keine Xaero-Wegpunkte gefunden. Installiere Xaero’s Minimap in einer Instanz und setze einen Wegpunkt.");
-        }
-        for w in &wp.worlds {
-            panel_with(ui, if w.enabled { theme::GREEN } else { Color32::TRANSPARENT }, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        title(ui, &w.display, 14.0, theme::WHITE);
-                        ui.horizontal(|ui| {
-                            badge(ui, if w.multiplayer { "Server" } else { "Einzelspieler" }, theme::GRAY);
-                            if w.enabled {
-                                badge(ui, "wird geteilt", theme::GREEN);
-                            }
-                        });
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::toggle(ui, w.enabled, "Diese Welt mit dem Team teilen").clicked() {
-                            self.toggle_world(&w.folder, !w.enabled);
-                        }
-                    });
-                });
-                for i in &w.instances {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(&i.name).font(theme::mc_font(11.0)));
-                        muted(
-                            ui,
-                            format!(
-                                "{} Wegpunkte · {} geteilt · Sync {}",
-                                i.waypoints,
-                                i.shared,
-                                i.last_sync.map(fmt_ago).unwrap_or_else(|| "noch nie".into())
-                            ),
-                        );
-                    });
-                }
-            });
-        }
-
-        section(ui, "Automatisch über Prism");
-        muted(
-            ui,
-            "Prism ruft den Launcher vor dem Spielstart (holt neue Wegpunkte) und nach dem Beenden (lädt deine hoch) auf – \
-             egal ob du über diesen Launcher oder direkt in Prism startest.",
-        );
-        if wp.prism_running {
-            panel_with(ui, theme::GOLD, |ui| {
-                ui.label(
-                    RichText::new("Prism läuft gerade. Zum Ein- oder Ausschalten bitte Prism schließen – sonst überschreibt Prism die Einstellung.")
-                        .color(theme::GOLD),
-                );
-            });
-        }
-        let with_xaero: Vec<_> = wp.instances.iter().filter(|i| i.has_xaero).collect();
-        let rows = if with_xaero.is_empty() { wp.instances.iter().collect() } else { with_xaero };
-        for inst in rows {
-            panel(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(&inst.name).font(theme::mc_font(12.0)).color(theme::WHITE));
-                        muted(
-                            ui,
-                            if inst.hooks {
-                                "Sync vor dem Start und nach dem Beenden"
-                            } else if inst.has_xaero {
-                                "Aus"
-                            } else {
-                                "Xaero nicht gefunden"
-                            },
-                        );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::toggle(ui, inst.hooks, "Automatischer Sync über Prism").clicked() {
-                            self.toggle_hooks(&inst.id, &inst.name, !inst.hooks);
-                        }
-                    });
-                });
-            });
-        }
-
-        section(ui, "So teilst du einen Wegpunkt");
-        panel(ui, |ui| {
-            let steps = [
-                "Im Spiel das Wegpunkt-Menü von Xaero öffnen (Standard: Taste U).".to_string(),
-                if ws.share_all {
-                    "Wegpunkt ganz normal setzen – alle werden geteilt.".to_string()
-                } else {
-                    format!("Wegpunkt bearbeiten und dem Set „{set}“ zuordnen. Gibt es das Set noch nicht, lege es in Xaero an.")
-                },
-                "Oben die Welt mit dem Schalter freigeben.".to_string(),
-                "Auto-Sync für die Instanz einschalten – oder bei geschlossenem Spiel auf „Jetzt synchronisieren“ klicken.".to_string(),
-            ];
-            for (i, s) in steps.iter().enumerate() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("{}.", i + 1)).font(theme::mc_font(12.0)).color(theme::YELLOW));
-                    ui.label(s);
-                });
-            }
-        });
-    }
-
     // ----- Einstellungen -----
 
     fn ui_settings(&mut self, ui: &mut Ui) {
@@ -1743,36 +1494,6 @@ impl App {
                     self.report(r);
                 }
             });
-        });
-
-        section(ui, "Wegpunkt-Sync");
-        panel(ui, |ui| {
-            let fallback = if self.cfg.waypoint_server.is_empty() { "https://wegpunkte.example.net".to_string() } else { self.cfg.waypoint_server.clone() };
-            field_label(ui, "Sync-Server");
-            if text_field(ui, &mut self.form.wp_url, &fallback, false) && self.form.wp_url.trim() != self.settings.waypoints.server_url {
-                self.save(json!({ "waypoints": { "serverUrl": self.form.wp_url.trim() } }));
-            }
-            field_label(ui, "Team-Schlüssel");
-            if text_field(ui, &mut self.form.wp_token, "vom Server-Betreiber", true) && self.form.wp_token.trim() != self.settings.waypoints.token {
-                self.save(json!({ "waypoints": { "token": self.form.wp_token.trim() } }));
-            }
-            field_label(ui, "Geteiltes Xaero-Set");
-            if text_field(ui, &mut self.form.wp_set, "Team", false) {
-                let set = self.form.wp_set.trim();
-                let set = if set.is_empty() { "Team" } else { set }.to_string();
-                if set != self.settings.waypoints.shared_set {
-                    self.save(json!({ "waypoints": { "sharedSet": set } }));
-                }
-            }
-            ui.add_space(4.0);
-            let mut share_all = self.settings.waypoints.share_all;
-            if theme::checkbox(ui, &mut share_all, "Alle Wegpunkte teilen (nicht nur das Set) – Todespunkte bleiben privat").changed() {
-                self.save(json!({ "waypoints": { "shareAll": share_all } }));
-            }
-            ui.add_space(4.0);
-            if ui.add(McButton::new("Verbindung testen").icon(Icon::Refresh)).clicked() {
-                self.test_waypoints();
-            }
         });
 
         section(ui, "Launcher");
@@ -1894,7 +1615,6 @@ impl App {
                     let (head, color, icon) = match t.tone {
                         Tone::Ok => ("Erledigt!", theme::YELLOW, Icon::Chest),
                         Tone::Error => ("Fehler", theme::RED, Icon::Close),
-                        Tone::Info => ("Hinweis", theme::WHITE, Icon::Compass),
                     };
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let inner = egui::Frame::new().inner_margin(Margin { left: 50, right: 14, top: 10, bottom: 12 }).show(ui, |ui| {
@@ -1995,18 +1715,6 @@ fn field_label(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).font(theme::mc_font(11.0)).color(theme::GRAY));
 }
 
-/// Gibt `true` zurück, wenn das Feld verlassen und dabei geändert wurde.
-fn text_field(ui: &mut Ui, value: &mut String, hint: &str, password: bool) -> bool {
-    let resp = ui.add(
-        egui::TextEdit::singleline(value)
-            .hint_text(hint)
-            .password(password)
-            .desired_width(ui.available_width().min(520.0))
-            .margin(Margin::symmetric(8, 7)),
-    );
-    resp.lost_focus()
-}
-
 fn path_field(ui: &mut Ui, value: &mut String, hint: &str, button: &str) -> (bool, bool) {
     ui.horizontal(|ui| {
         let resp = ui.add(
@@ -2088,7 +1796,6 @@ impl eframe::App for App {
                         View::Home => self.ui_home(ui),
                         View::Instances => self.ui_instances(ui),
                         View::Packs => self.ui_packs(ui),
-                        View::Waypoints => self.ui_waypoints(ui),
                         View::Settings => self.ui_settings(ui),
                     }
                     ui.add_space(24.0);

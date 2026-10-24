@@ -59,8 +59,6 @@ pub struct Site {
     pub brand: Brand,
     pub news: Vec<NewsItem>,
     pub servers: Vec<ServerEntry>,
-    /// Leer = dieser Server selbst, sofern Wegpunkt-Teams eingerichtet sind.
-    pub waypoint_server: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,7 +468,7 @@ impl Store {
     }
 
     /// Antwort für `/launcher/config.json`.
-    pub fn launcher_config(&self, waypoint_default: &str) -> Value {
+    pub fn launcher_config(&self) -> Value {
         let mut out = serde_json::Map::new();
         let brand = &self.site.brand;
         let mut b = serde_json::Map::new();
@@ -527,14 +525,6 @@ impl Store {
             })
             .collect();
         out.insert("servers".into(), servers.into());
-        let waypoint = if self.site.waypoint_server.trim().is_empty() {
-            waypoint_default
-        } else {
-            self.site.waypoint_server.trim()
-        };
-        if !waypoint.is_empty() {
-            out.insert("waypointServer".into(), waypoint.into());
-        }
         Value::Object(out)
     }
 }

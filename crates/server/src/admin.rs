@@ -177,15 +177,11 @@ async fn status(_: Admin, State(state): State<Shared>, headers: HeaderMap) -> Js
     let base = public_base(&state, &headers);
     let store = state.store.lock().await;
     let (blobs, bytes) = store.blob_usage();
-    let mut teams: Vec<&String> = state.tokens.values().collect();
-    teams.sort();
-    teams.dedup();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "publicUrl": base,
         "configUrl": format!("{base}/launcher/config.json"),
         "updateUrl": format!("{base}/launcher/update.json"),
-        "teams": teams,
         "blobs": { "count": blobs, "bytes": bytes },
     }))
 }
@@ -379,7 +375,7 @@ async fn create_pack(
             } else {
                 req.meta.name.clone()
             };
-            meta.listed = false;
+            meta.listed = req.meta.listed;
             meta.instance_id.clear();
             (meta, src.files.clone())
         }

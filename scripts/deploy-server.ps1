@@ -9,7 +9,7 @@
   Auf dem Server entsteht:
     /opt/mylauncher/mylauncher-server     Programm
     /etc/mylauncher/server.env            Umgebung (nur root lesbar)
-    /var/lib/mylauncher/                  Daten: Modpacks, Releases, Wegpunkte
+    /var/lib/mylauncher/                  Daten: Modpacks, Releases
     mylauncher-server.service             systemd-Dienst, lauscht auf 127.0.0.1:8787
     /etc/caddy/mylauncher.caddy           HTTPS über Caddy (bei "proxy": "caddy")
 
@@ -35,9 +35,6 @@ if (-not $cfg.adminPassword) {
     $cfg.adminPassword = New-Secret 32
     Save-ServerConfig $cfg
     Write-Host "Admin-Passwort erzeugt und in scripts\server.config.json gespeichert." -ForegroundColor Yellow
-}
-foreach ($t in $cfg.waypointTokens) {
-    if ($t -notmatch '^[A-Za-z0-9_-]+:\S{8,}$') { throw "waypointTokens: '$t' – Format team:GEHEIMNIS (mind. 8 Zeichen)" }
 }
 if ($cfg.proxy -notin 'caddy', 'none') { throw 'server.config.json: proxy muss "caddy" oder "none" sein.' }
 
@@ -73,7 +70,6 @@ try {
         "MYLAUNCHER_ADMIN_PASSWORD=$($cfg.adminPassword)",
         "MYLAUNCHER_PUBLIC_URL=$($cfg.publicUrl)"
     )
-    if (@($cfg.waypointTokens).Count) { $envLines += "WAYPOINT_TOKENS=$(@($cfg.waypointTokens) -join ',')" }
     Write-Utf8 (Join-Path $stage 'server.env') (($envLines -join "`n") + "`n")
 
     if ($cfg.proxy -eq 'caddy') {

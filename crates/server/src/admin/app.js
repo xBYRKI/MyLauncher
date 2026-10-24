@@ -370,6 +370,7 @@ async function newPack() {
       { name: 'minecraft', label: 'Minecraft-Version', placeholder: '1.21.4' },
       { name: 'loader', label: 'Loader', type: 'select', options: LOADERS, value: 'fabric' },
       { name: 'loaderVersion', label: 'Loader-Version', placeholder: '0.16.10' },
+      { name: 'listed', label: 'Im Launcher anzeigen', type: 'checkbox', value: true },
       templates.length ? { name: 'copyFrom', label: 'Dateien und Einstellungen übernehmen von', type: 'select', options: [['', '– nichts –'], ...templates] } : null,
     ].filter(Boolean),
     ok: 'Anlegen',
@@ -382,6 +383,7 @@ async function newPack() {
       name: v.name,
       minecraft: v.minecraft,
       loader: { type: v.loader, version: v.loaderVersion },
+      listed: v.listed,
       copyFrom: v.copyFrom || null,
     });
     toast(`Modpack „${v.name || id}“ angelegt`, 'ok');
@@ -914,7 +916,7 @@ async function viewNews(main) {
     list);
 }
 
-// ---------- Launcher: Branding, Server, Wegpunkte ----------
+// ---------- Launcher: Branding, Server ----------
 
 async function viewLauncher(main) {
   const site = await api('GET', '/site');
@@ -951,7 +953,6 @@ async function viewLauncher(main) {
     toast('Gespeichert – Launcher übernehmen es beim nächsten Abruf.', 'ok');
   }));
 
-  const teams = state.status.teams;
   main.replaceChildren(
     head('Launcher', 'Leere Felder lassen die im Launcher eingebauten Werte stehen.', saveBtn),
     h('section', { class: 'panel' },
@@ -967,15 +968,7 @@ async function viewLauncher(main) {
         h('button', { class: 'small', onclick: () => { site.servers.push({ name: '', address: '', instance: '' }); markDirty(); renderServers(); } }, '+ Server')),
       h('table', {},
         h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Adresse'), h('th', {}, 'Instanz'), h('th'))),
-        servers)),
-    h('section', { class: 'panel' },
-      h('header', {}, h('h2', {}, 'Wegpunkt-Server')),
-      h('div', { class: 'body stack' },
-        h('label', { class: 'field' }, h('span', {}, 'Adresse'),
-          bind(site, 'waypointServer', h('input', { type: 'url', value: site.waypointServer, placeholder: teams.length ? `leer = dieser Server (${state.status.publicUrl})` : 'https://wegpunkte.example.net' })),
-          h('small', {}, teams.length
-            ? `Dieser Server teilt Wegpunkte für ${teams.length} Team(s): ${teams.join(', ')}. Den Team-Schlüssel tragen Spieler im Launcher ein.`
-            : 'Auf diesem Server ist kein Wegpunkt-Team eingerichtet (--token team:GEHEIM).')))));
+        servers)));
 }
 
 // ---------- Launcher-Updates ----------
@@ -1111,13 +1104,7 @@ async function viewSystem(main) {
             toast(r.removed ? `${r.removed} ungenutzte Dateien gelöscht (${fmtBytes(r.bytes)})` : 'Nichts aufzuräumen', 'ok');
             await viewSystem(main);
           }),
-        }, 'Ungenutzte Dateien löschen'))),
-    h('section', { class: 'panel' },
-      h('header', {}, h('h2', {}, 'Wegpunkt-Sync')),
-      h('div', { class: 'body' },
-        s.teams.length
-          ? h('div', { class: 'row' }, s.teams.map(t => badge(t, 'blue')))
-          : h('p', { class: 'muted' }, 'Keine Teams eingerichtet. Server mit --token team:GEHEIM starten.'))));
+        }, 'Ungenutzte Dateien löschen'))));
 }
 
 // ---------- Start ----------

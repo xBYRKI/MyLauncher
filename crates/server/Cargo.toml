@@ -2,7 +2,7 @@
 name = "mylauncher-server"
 version.workspace = true
 edition.workspace = true
-description = "Server für MyLauncher: Wegpunkt-Sync, Modpacks, Launcher-Updates und Admin-Oberfläche"
+description = "Server für MyLauncher: Modpacks, Launcher-Updates und Admin-Oberfläche"
 
 [dependencies]
 anyhow.workspace = true

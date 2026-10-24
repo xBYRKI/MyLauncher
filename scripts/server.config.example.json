@@ -5,7 +5,6 @@
   "identityFile": "",
   "publicUrl": "https://launcher.stephanides-it.at",
   "adminPassword": "",
-  "waypointTokens": [],
   "proxy": "caddy",
   "exposeAdmin": false,
   "tunnelPort": 18787

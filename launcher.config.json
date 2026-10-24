@@ -9,7 +9,7 @@
     {
       "title": "Willkommen im Launcher",
       "date": "2026-10-18",
-      "body": "Deine Prism-Instanzen werden automatisch erkannt. Unter „Wegpunkte“ teilst du Xaero-Wegpunkte mit deinem Team. News, Modpacks und Server stellst du in launcher.config.json ein."
+      "body": "Deine Prism-Instanzen werden automatisch erkannt. News, Modpacks und Server kommen direkt vom Launcher-Server."
     }
   ],
   "packs": [],

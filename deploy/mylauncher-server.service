@@ -1,12 +1,12 @@
 [Unit]
-Description=MyLauncher-Server (Modpacks, Launcher-Updates, Wegpunkt-Sync)
+Description=MyLauncher-Server (Modpacks, Launcher-Updates)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=mylauncher
 Group=mylauncher
-# Adresse, Datenordner, Admin-Passwort, öffentliche URL, Wegpunkt-Tokens
+# Adresse, Datenordner, Admin-Passwort, öffentliche URL
 EnvironmentFile=/etc/mylauncher/server.env
 ExecStart=/opt/mylauncher/mylauncher-server
 Restart=on-failure

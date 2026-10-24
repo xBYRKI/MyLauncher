@@ -268,7 +268,6 @@ pub enum Icon {
     Home,
     Grid,
     Chest,
-    Compass,
     Min,
     Max,
     Close,
@@ -306,9 +305,6 @@ impl Icon {
             ],
             Icon::Chest => [
                 "########", "#......#", "#......#", "###..###", "#..##..#", "#......#", "#......#", "########",
-            ],
-            Icon::Compass => [
-                "...##...", "..#..#..", ".#....#.", "#..##..#", "#..##..#", ".#....#.", "..#..#..", "...##...",
             ],
             Icon::Min => [
                 "........", "........", "........", "........", "........", "........", "########", "........",
@@ -523,26 +519,6 @@ pub fn xp_bar(ui: &mut Ui, fraction: f32, label: &str) {
         }
         ui.label(egui::RichText::new(label).font(mc_font(11.0)).color(GREEN));
     });
-}
-
-/// Schalter: Slot mit Stein-Knopf, grün wenn an.
-pub fn toggle(ui: &mut Ui, on: bool, tooltip: &str) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(22.0 * PX, 11.0 * PX), Sense::click());
-    let p = ui.painter();
-    let slot = if on { Color32::from_rgb(0x2E, 0x6B, 0x1E) } else { Color32::from_rgb(0x1A, 0x1A, 0x1A) };
-    p.extend(bevel_shapes(rect, slot, SLOT_DARK, SLOT_LIGHT, true));
-    let knob_w = 9.0 * PX;
-    let knob = if on {
-        Rect::from_min_max(Pos2::new(rect.max.x - knob_w, rect.min.y), rect.max)
-    } else {
-        Rect::from_min_max(rect.min, Pos2::new(rect.min.x + knob_w, rect.max.y))
-    };
-    let fill = if resp.hovered() { Color32::from_rgb(0x84, 0x84, 0x84) } else { Color32::from_rgb(0x6F, 0x6F, 0x6F) };
-    p.extend(bevel_shapes(knob, fill, Color32::from_rgb(0xA8, 0xA8, 0xA8), Color32::from_rgb(0x3A, 0x3A, 0x3A), true));
-    if resp.hovered() {
-        p.rect_stroke(knob.shrink(PX / 2.0), CornerRadius::ZERO, Stroke::new(PX, WHITE), StrokeKind::Middle);
-    }
-    resp.on_hover_text(tooltip)
 }
 
 /// Kontrollkästchen: schwarzer Slot, grüner Haken aus Pixeln.

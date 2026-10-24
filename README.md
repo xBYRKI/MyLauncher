@@ -2,32 +2,29 @@
 
 Eigener Minecraft-Launcher in **Rust** mit nativer Oberfläche (egui) im Minecraft-Stil. **Prism Launcher läuft darunter als Engine:**
 Prism übernimmt Microsoft-Login, Java, Loader-Installation und den Spielstart. Der Launcher liest Prisms Daten
-direkt, steuert Prism über dessen Kommandozeile und klinkt sich für den Xaero-Wegpunkt-Sync als Prism-Hook ein.
+direkt und steuert Prism über dessen Kommandozeile.
 
 ```
 mylauncher.exe (Rust, egui)
   ├─ liest     instances/*/instance.cfg, mmc-pack.json, accounts.json (nur Name/UUID)
   ├─ startet   prismlauncher --launch <Instanz> --profile <Konto> [--server <Adresse>]
   ├─ Modpacks  legt Prism-Instanzen an und hält Dateien per SHA1 aktuell
-  ├─ Update    prüft update.json, lädt den Installer und akzeptiert nur unsere Signatur
-  └─ Hooks     PreLaunchCommand / PostExitCommand = mylauncher --xaero-sync pre|post "$INST_MC_DIR"
-                  └─ mylauncher-server (eigener Rust-Server, teilt Wegpunkte im Team)
+  └─ Update    prüft update.json, lädt den Installer und akzeptiert nur unsere Signatur
 
 mylauncher-server
   ├─ /admin/      Admin-Oberfläche: Modpacks, News, Server, Launcher-Updates
-  ├─ /launcher/   Konfiguration, Manifeste, Dateien und update.json für den Launcher
-  └─ /api/        Wegpunkt-Sync
+  └─ /launcher/   Konfiguration, Manifeste, Dateien und update.json für den Launcher
 ```
 
 ## Aufbau
 
 | Ordner | Inhalt |
 |---|---|
-| `app/` | Launcher-Oberfläche (egui/eframe, Minecraft-Optik) und Hook-Modus `--xaero-sync` |
+| `app/` | Launcher-Oberfläche (egui/eframe, Minecraft-Optik) |
 | `app/assets/` | Pixel-Schrift [Monocraft](https://github.com/IdreesInc/Monocraft) (SIL OFL 1.1) und Logo |
 | `installer/` | NSIS-Skript für den Installer |
-| `crates/core/` | Prism-Brücke, Modpack-Sync, Server-Ping, Xaero-Parser, Wegpunkt-Sync; `packtool` |
-| `crates/server/` | `mylauncher-server` – Admin-Oberfläche, Modpack-/Update-Auslieferung und Wegpunkt-Sync |
+| `crates/core/` | Prism-Brücke, Modpack-Sync, Server-Ping; `packtool` |
+| `crates/server/` | `mylauncher-server` – Admin-Oberfläche, Modpack-/Update-Auslieferung |
 | `crates/protocol/` | Gemeinsame Typen von Launcher und Server |
 
 ## Bauen & Starten
@@ -41,7 +38,7 @@ cargo test -p launcher-core              # Tests
 
 In VS Code liegen dieselben Schritte als Tasks bereit (`.vscode/tasks.json`): **Strg+Umschalt+B** baut,
 *Tasks: Run Task* bietet Starten, Release, Installer, signiertes Release/Veröffentlichen, Tests, Clippy,
-lokalen Wegpunkt-Server und Integrationstest. **F5** startet den Launcher im Debugger.
+lokalen Server und Integrationstest. **F5** startet den Launcher im Debugger.
 
 ```powershell
 .\scripts\build-setup.ps1               # unsignierter Installer zum Testen → dist\
@@ -99,15 +96,15 @@ sein, sonst kann der Launcher die Dateien nicht laden. Ohne `-Publish` landet al
 ## Server & Admin-Oberfläche
 
 `mylauncher-server` liefert Modpacks, News, Serverliste und Launcher-Updates aus und wird über eine
-Weboberfläche gepflegt. Derselbe Prozess übernimmt den Wegpunkt-Sync.
+Weboberfläche gepflegt.
 
 ```bash
 cargo build --release -p mylauncher-server
-mylauncher-server --bind 127.0.0.1:8787 --data ./daten   --admin-password "EIN-LANGES-ADMIN-PASSWORT"   --public-url https://mc.example.net   --token freunde:EIN-LANGES-GEHEIMNIS          # optional, für den Wegpunkt-Sync
+mylauncher-server --bind 127.0.0.1:8787 --data ./daten   --admin-password "EIN-LANGES-ADMIN-PASSWORT"   --public-url https://mc.example.net
 ```
 
-Auch per Umgebung: `MYLAUNCHER_ADMIN_PASSWORD`, `MYLAUNCHER_PUBLIC_URL`, `WAYPOINT_BIND`, `WAYPOINT_DATA`,
-`WAYPOINT_TOKENS`. Davor gehört ein Reverse-Proxy mit HTTPS (z. B. Caddy: `mc.example.net { reverse_proxy 127.0.0.1:8787 }`).
+Auch per Umgebung: `MYLAUNCHER_ADMIN_PASSWORD`, `MYLAUNCHER_PUBLIC_URL`, `WAYPOINT_BIND` (Adresse),
+`WAYPOINT_DATA` (Datenordner) – die Namen stammen noch aus der Zeit des Wegpunkt-Servers. Davor gehört ein Reverse-Proxy mit HTTPS (z. B. Caddy: `mc.example.net { reverse_proxy 127.0.0.1:8787 }`).
 `--public-url` sollte gesetzt sein – daraus entstehen die absoluten Adressen in `update.json`.
 Ohne die Angabe nimmt der Server `X-Forwarded-Host`/`Host` der Anfrage.
 
@@ -117,12 +114,12 @@ Die Oberfläche liegt unter **`https://mc.example.net/admin/`**:
 |---|---|
 | **Modpacks** | Pack anlegen (auch als Kopie), Dateien/Ordner per Drag & Drop hochladen, als *Vorgabedatei* markieren, umbenennen, entfernen. Änderungen landen in einem **Entwurf**; erst *Veröffentlichen* erzeugt eine neue Version. Ältere Versionen lassen sich wieder ausliefern (Rollback) oder in den Entwurf laden. |
 | **News** | Einträge für die Startseite, Reihenfolge per Knopf |
-| **Launcher** | Branding (Name, Untertitel, Akzentfarbe), Serverliste, Wegpunkt-Server |
+| **Launcher** | Branding (Name, Untertitel, Akzentfarbe), Serverliste |
 | **Updates** | signierten Installer hochladen, Version anbieten oder zurückziehen |
 | **System** | Adressen zum Einbauen in den Launcher, Speicherplatz, ungenutzte Dateien löschen |
 
 Dateien liegen nach SHA1 abgelegt (`daten/launcher/blobs/`), jede Mod also nur einmal – auch über Packs und
-Versionen hinweg. Die Wegpunkt-Daten bleiben wie bisher unter `daten/<team>/`; der Teamname `launcher` ist dafür reserviert.
+Versionen hinweg.
 
 **Launcher anbinden** – unter *System* stehen beide Adressen, die in `launcher.config.json` gehören:
 
@@ -164,7 +161,6 @@ Copy-Item scripts\server.config.example.json scripts\server.config.json   # nich
 | `host`, `user`, `port`, `identityFile` | SSH-Zugang. `user` ist `root` oder darf `sudo` |
 | `publicUrl` | Adresse, unter der Launcher den Server erreichen (ohne Pfad) |
 | `adminPassword` | leer lassen – der erste Deploy erzeugt eins und trägt es hier ein |
-| `waypointTokens` | `["freunde:GEHEIMNIS"]` für den Wegpunkt-Sync |
 | `proxy` | `caddy`: Site-Block mit automatischem HTTPS wird eingerichtet; `none`: Proxy selbst bauen |
 | `exposeAdmin` | `false` (Vorgabe): Caddy sperrt `/admin` nach außen, Zugang nur per Tunnel |
 | `tunnelPort` | lokaler Port für den Tunnel |
@@ -212,28 +208,6 @@ mit `build-signed.ps1 -Notes "…" -Publish -GitHubRepo xBYRKI/MyLauncher` verö
 eigenen Server **und** als GitHub-Release raus; alte Launcher finden sie noch auf GitHub, und ab dieser Version
 kommen alle Updates vom eigenen Server.
 
-## Xaero-Wegpunkte teilen
-
-1. **Server starten** (z. B. auf deinem Server-Rechner, Linux oder Windows):
-   ```bash
-   cargo build --release -p mylauncher-server
-   mylauncher-server --bind 0.0.0.0:8787 --data ./daten --token freunde:EIN-LANGES-GEHEIMNIS
-   ```
-   Mehrere Teams: `--token` mehrfach angeben. Fürs Internet einen Reverse-Proxy mit HTTPS davorschalten
-   (z. B. Caddy: `wegpunkte.example.net { reverse_proxy 127.0.0.1:8787 }`).
-2. **Im Launcher** unter *Einstellungen → Wegpunkt-Sync* die Server-URL und den Team-Schlüssel eintragen
-   (oder die URL als `waypointServer` in `launcher.config.json` vorgeben).
-3. Unter *Wegpunkte* die Welt (z. B. `gaming.stephanides-it.at`) mit **Teilen** freigeben.
-4. Für jede Instanz **Automatisch über Prism** einschalten. Dafür muss Prism kurz geschlossen sein.
-5. Im Spiel Wegpunkte dem Xaero-Set **„Team“** zuordnen. Nur diese werden geteilt,
-   alle anderen bleiben privat. Mit „Alle Wegpunkte teilen“ gilt es für alle, Todespunkte bleiben trotzdem privat.
-
-**Wie der Sync funktioniert:** Vor dem Spielstart holt Prism über den Hook den aktuellen Team-Stand. Nach dem Beenden
-lädt es deine Änderungen hoch. Neu, geändert und gelöscht wird anhand des letzten Sync-Stands erkannt
-(`mylauncher-sync.json` im Xaero-Weltordner). Während das Spiel läuft, wird nicht synchronisiert, weil Xaero seine
-Dateien sonst wieder überschreibt. Ist der Server nicht erreichbar, startet das Spiel trotzdem normal. Das Log liegt in
-`%APPDATA%\MyLauncher\waypoint-sync.log`.
-
 ## Konfiguration – `launcher.config.json`
 
 Wird in die Exe eingebaut. Eine Datei gleichen Namens in `%APPDATA%\MyLauncher\` überschreibt einzelne Felder.
@@ -246,7 +220,6 @@ Wird in die Exe eingebaut. Eine Datei gleichen Namens in `%APPDATA%\MyLauncher\`
   "packs":   [ { "manifest": "https://example.net/pack/manifest.json" } ],
   "servers": [ { "name": "gaming.stephanides-it.at", "address": "gaming.stephanides-it.at", "instance": "26.2" } ],
   "hiddenInstances": [],
-  "waypointServer": "https://wegpunkte.example.net",
   "remoteConfig": "https://mc.example.net/launcher/config.json",
   "update":  { "feed": "https://github.com/…/releases/latest/download/update.json",
                "signerThumbprint": "7C72A427…" }
@@ -269,7 +242,7 @@ cargo run -p launcher-core --bin packtool -- ./mein-pack --id mein-pack --name "
   --version 1.0.0 --mc 1.21.4 --loader fabric@0.16.10 --server play.example.net --memory 4096
 ```
 
-Einfacher geht es über die Admin-Oberfläche (siehe oben). Ohne Server: Lade den Ordner hoch und trage die URL der `manifest.json` unter `packs` ein. Für ein Update erhöhst du `--version`.
+Einfacher geht es über die Admin-Oberfläche (siehe oben): Pack anlegen, Dateien hochladen, *Veröffentlichen* – mit „Im Launcher anzeigen“ erscheint es automatisch bei allen Spielern. Ohne Server: Lade den Ordner hoch und trage die URL der `manifest.json` unter `packs` ein. Für ein Update erhöhst du `--version`.
 Eigene Mods der Spieler bleiben erhalten, denn nur Dateien aus dem Manifest werden verwaltet.
 
 ### Abgleich

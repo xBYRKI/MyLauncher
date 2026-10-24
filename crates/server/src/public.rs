@@ -36,14 +36,8 @@ fn fresh(json: impl IntoResponse) -> Response {
     res
 }
 
-async fn config(State(state): State<Shared>, headers: HeaderMap) -> Response {
-    // Ist dieser Server auch Wegpunkt-Server, schlägt er sich selbst vor.
-    let waypoint = if state.tokens.is_empty() {
-        String::new()
-    } else {
-        public_base(&state, &headers)
-    };
-    let value: Value = state.store.lock().await.launcher_config(&waypoint);
+async fn config(State(state): State<Shared>) -> Response {
+    let value: Value = state.store.lock().await.launcher_config();
     fresh(Json(value))
 }
 
