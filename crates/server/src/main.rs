@@ -1,12 +1,24 @@
-//! Wegpunkt-Sync-Server für MyLauncher.
-//!
-//! Speichert geteilte Xaero-Wegpunkte pro Team und Welt als JSON-Dateien.
+//! Server für MyLauncher: Wegpunkt-Sync, Modpacks, Launcher-Updates und Admin-Oberfläche.
 //!
 //! ```text
-//! waypoint-server --bind 0.0.0.0:8787 --data ./data --token freunde:GEHEIM [--token team2:GEHEIM2]
+//! mylauncher-server --bind 0.0.0.0:8787 --data ./data \
+//!     --token freunde:GEHEIM [--token team2:GEHEIM2] \
+//!     --admin-password LANGES-ADMIN-PASSWORT --public-url https://mc.example.net
 //! ```
-//! Alternativ per Umgebung: `WAYPOINT_BIND`, `WAYPOINT_DATA`, `WAYPOINT_TOKENS="freunde:GEHEIM,team2:GEHEIM2"`.
+//! Alternativ per Umgebung: `WAYPOINT_BIND`, `WAYPOINT_DATA`, `WAYPOINT_TOKENS="freunde:GEHEIM,team2:GEHEIM2"`,
+//! `MYLAUNCHER_ADMIN_PASSWORD`, `MYLAUNCHER_PUBLIC_URL`.
 //! Für Internet-Betrieb einen Reverse-Proxy mit HTTPS davorschalten (Caddy, nginx).
+//!
+//! | Pfad | |
+//! |---|---|
+//! | `/api/…` | Wegpunkt-Sync (Team-Schlüssel) |
+//! | `/launcher/…` | Packs, News, Server, Update-Feed für den Launcher (öffentlich) |
+//! | `/admin/` | Admin-Oberfläche (Admin-Passwort) |
+
+mod admin;
+mod public;
+mod store;
+mod waypoints;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -14,185 +26,88 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use protocol::{RoomState, SharedWaypoint, SyncRequest, WaypointData};
-use serde_json::{json, Value};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::Redirect;
+use axum::routing::get;
+use axum::Router;
+use protocol::RoomState;
 use tokio::sync::Mutex;
 
-const MAX_WAYPOINTS_PER_ROOM: usize = 5000;
-const MAX_TEXT: usize = 100;
-
-struct AppState {
+pub struct AppState {
     data_dir: PathBuf,
     /// Token -> Teamname
     tokens: HashMap<String, String>,
     rooms: Mutex<HashMap<(String, String), RoomState>>,
+    store: Mutex<store::Store>,
+    auth: admin::Auth,
+    /// Öffentliche Adresse ohne `/` am Ende; leer = aus den Anfrage-Headern ableiten.
+    public_url: String,
 }
 
-type Shared = Arc<AppState>;
-type ApiError = (StatusCode, String);
+pub type Shared = Arc<AppState>;
+pub type ApiError = (StatusCode, String);
 
-fn now_millis() -> u64 {
+pub fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
-fn team_for(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    state
-        .tokens
-        .get(token)
-        .cloned()
-        .ok_or((StatusCode::UNAUTHORIZED, "Ungültiger Team-Schlüssel".into()))
+pub fn bad(e: impl std::fmt::Display) -> ApiError {
+    (StatusCode::BAD_REQUEST, format!("{e:#}"))
 }
 
-fn room_file(state: &AppState, team: &str, room: &str) -> PathBuf {
-    state.data_dir.join(team).join(format!("{room}.json"))
+pub fn internal(e: impl std::fmt::Display) -> ApiError {
+    eprintln!("Fehler: {e:#}");
+    (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
 }
 
-async fn load_room<'a>(
-    state: &AppState,
-    rooms: &'a mut HashMap<(String, String), RoomState>,
-    team: &str,
-    room: &str,
-) -> &'a mut RoomState {
-    let key = (team.to_string(), room.to_string());
-    if !rooms.contains_key(&key) {
-        let loaded = tokio::fs::read_to_string(room_file(state, team, room))
-            .await
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        rooms.insert(key.clone(), loaded);
+/// Adresse, unter der Launcher den Server erreichen – für absolute URLs (Update-Feed).
+/// Mit `--public-url` fest vorgegeben, sonst aus `X-Forwarded-*`/`Host`.
+pub fn public_base(state: &AppState, headers: &HeaderMap) -> String {
+    if !state.public_url.is_empty() {
+        return state.public_url.clone();
     }
-    rooms.get_mut(&key).expect("gerade eingefügt")
-}
-
-async fn save_room(
-    state: &AppState,
-    team: &str,
-    room: &str,
-    data: &RoomState,
-) -> std::io::Result<()> {
-    let path = room_file(state, team, room);
-    tokio::fs::create_dir_all(path.parent().expect("hat Elternordner")).await?;
-    let tmp = path.with_extension("json.tmp");
-    tokio::fs::write(&tmp, serde_json::to_vec_pretty(data)?).await?;
-    tokio::fs::rename(&tmp, &path).await
-}
-
-fn validate(w: &WaypointData) -> bool {
-    let short = |s: &str| s.chars().count() <= MAX_TEXT && !s.contains('\n');
-    w.dim.starts_with("dim%")
-        && protocol::valid_room(&w.dim)
-        && protocol::valid_room(&w.world)
-        && short(&w.name)
-        && short(&w.initials)
-        && short(&w.y)
-        && !w.name.is_empty()
-        && w.extra.len() <= 16
-        && w.extra.iter().all(|e| short(e) && !e.contains(':'))
-}
-
-async fn health(State(state): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
-    let team = team_for(&state, &headers)?;
-    Ok(Json(json!({ "ok": true, "team": team })))
-}
-
-async fn get_room(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    Path(room): Path<String>,
-) -> Result<Json<RoomState>, ApiError> {
-    let team = team_for(&state, &headers)?;
-    if !protocol::valid_room(&room) {
-        return Err((StatusCode::BAD_REQUEST, "Ungültiger Raum".into()));
-    }
-    let mut rooms = state.rooms.lock().await;
-    Ok(Json(
-        load_room(&state, &mut rooms, &team, &room).await.clone(),
-    ))
-}
-
-async fn sync_room(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    Path(room): Path<String>,
-    Json(req): Json<SyncRequest>,
-) -> Result<Json<RoomState>, ApiError> {
-    let team = team_for(&state, &headers)?;
-    if !protocol::valid_room(&room) {
-        return Err((StatusCode::BAD_REQUEST, "Ungültiger Raum".into()));
-    }
-    let player: String = req.player.chars().take(32).collect();
-
-    let mut rooms = state.rooms.lock().await;
-    let data = load_room(&state, &mut rooms, &team, &room).await;
-    let before = data.waypoints.len();
-
-    let deleted: HashSet<&String> = req.deleted.iter().collect();
-    data.waypoints.retain(|w| !deleted.contains(&w.id));
-    let mut changed = data.waypoints.len() != before;
-
-    let mut keys: HashSet<String> = data.waypoints.iter().map(|w| w.data.key()).collect();
-    for w in req.added.into_iter().filter(validate) {
-        if data.waypoints.len() >= MAX_WAYPOINTS_PER_ROOM {
-            break;
-        }
-        if keys.insert(w.key()) {
-            data.waypoints.push(SharedWaypoint {
-                id: uuid::Uuid::new_v4().to_string(),
-                data: w,
-                author: player.clone(),
-                created_at: now_millis(),
-            });
-            changed = true;
-        }
-    }
-
-    if changed {
-        data.rev += 1;
-        save_room(&state, &team, &room, data).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Speichern fehlgeschlagen: {e}"),
-            )
-        })?;
-        println!(
-            "[{team}/{room}] rev {} von {player}: {} Wegpunkte",
-            data.rev,
-            data.waypoints.len()
-        );
-    }
-    Ok(Json(data.clone()))
+    let get = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let proto = get("x-forwarded-proto")
+        .filter(|p| p == "https" || p == "http")
+        .unwrap_or_else(|| "http".into());
+    let host = get("x-forwarded-host")
+        .or_else(|| get(header::HOST.as_str()))
+        .unwrap_or_else(|| "localhost".into());
+    format!("{proto}://{host}")
 }
 
 struct Args {
     bind: SocketAddr,
     data: PathBuf,
     tokens: HashMap<String, String>,
+    admin_password: String,
+    public_url: String,
 }
 
+const USAGE: &str = "mylauncher-server --bind 0.0.0.0:8787 --data ./data [--token team:GEHEIM] \
+[--admin-password PASSWORT] [--public-url https://mc.example.net]";
+
 fn parse_args() -> Result<Args> {
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
     let mut bind = std::env::var("WAYPOINT_BIND").unwrap_or_else(|_| "0.0.0.0:8787".into());
     let mut data = std::env::var("WAYPOINT_DATA").unwrap_or_else(|_| "data".into());
-    let mut raw_tokens: Vec<String> = std::env::var("WAYPOINT_TOKENS")
-        .map(|v| {
-            v.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut admin_password = env("MYLAUNCHER_ADMIN_PASSWORD");
+    let mut public_url = env("MYLAUNCHER_PUBLIC_URL");
+    let mut raw_tokens: Vec<String> = env("WAYPOINT_TOKENS")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -204,8 +119,14 @@ fn parse_args() -> Result<Args> {
             "--bind" => bind = value()?,
             "--data" => data = value()?,
             "--token" => raw_tokens.push(value()?),
+            "--admin-password" => admin_password = value()?,
+            "--public-url" => public_url = value()?,
             "-h" | "--help" => {
-                println!("waypoint-server --bind 0.0.0.0:8787 --data ./data --token team:GEHEIM");
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("mylauncher-server {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             other => bail!("Unbekanntes Argument: {other}"),
@@ -221,15 +142,30 @@ fn parse_args() -> Result<Args> {
         if !protocol::valid_room(team) {
             bail!("Ungültiger Teamname: {team}");
         }
+        if team == store::DIR {
+            bail!("Der Teamname \"{team}\" ist für Modpacks und Updates reserviert");
+        }
         tokens.insert(secret.to_string(), team.to_string());
     }
-    if tokens.is_empty() {
-        bail!("Mindestens ein --token team:GEHEIM angeben (oder WAYPOINT_TOKENS setzen)");
+    if !admin_password.is_empty() && admin_password.chars().count() < 12 {
+        bail!("Admin-Passwort ist zu kurz (mind. 12 Zeichen)");
+    }
+    if tokens.is_empty() && admin_password.is_empty() {
+        bail!("Mindestens --token team:GEHEIM oder --admin-password angeben\n{USAGE}");
+    }
+    let public_url = public_url.trim().trim_end_matches('/').to_string();
+    if !public_url.is_empty()
+        && !public_url.starts_with("https://")
+        && !public_url.starts_with("http://")
+    {
+        bail!("--public-url muss mit http:// oder https:// beginnen");
     }
     Ok(Args {
         bind: bind.parse().context("Ungültige --bind-Adresse")?,
         data: PathBuf::from(data),
         tokens,
+        admin_password,
+        public_url,
     })
 }
 
@@ -237,23 +173,39 @@ fn parse_args() -> Result<Args> {
 async fn main() -> Result<()> {
     let args = parse_args()?;
     std::fs::create_dir_all(&args.data)?;
+    let store = store::Store::open(&args.data)?;
     let teams: HashSet<&String> = args.tokens.values().collect();
     println!(
-        "Wegpunkt-Server auf http://{} – Daten in {} – Teams: {:?}",
+        "MyLauncher-Server auf http://{} – Daten in {}",
         args.bind,
-        args.data.display(),
-        teams
+        args.data.display()
+    );
+    println!(
+        "  Wegpunkt-Teams: {:?} · Modpacks: {} · Admin: {}",
+        teams,
+        store.packs.len(),
+        if args.admin_password.is_empty() {
+            "aus (--admin-password)".to_string()
+        } else {
+            format!("http://{}/admin/", args.bind)
+        }
     );
 
     let state = Arc::new(AppState {
         data_dir: args.data,
         tokens: args.tokens,
         rooms: Mutex::new(HashMap::new()),
+        store: Mutex::new(store),
+        auth: admin::Auth::new(args.admin_password),
+        public_url: args.public_url,
     });
     let app = Router::new()
-        .route("/api/health", get(health))
-        .route("/api/rooms/{room}", get(get_room))
-        .route("/api/rooms/{room}/sync", post(sync_room))
+        .route("/", get(|| async { Redirect::to("/admin/") }))
+        .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
+        .route("/admin/", get(admin::index))
+        .nest("/api", waypoints::router())
+        .nest("/launcher", public::router())
+        .nest("/admin", admin::router())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;

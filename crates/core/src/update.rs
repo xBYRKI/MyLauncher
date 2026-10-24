@@ -14,28 +14,14 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::TryStreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::authenticode;
 use crate::config::{self, UpdateConfig};
 
-/// Inhalt der `update.json` neben dem Installer.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Feed {
-    pub version: String,
-    #[serde(default)]
-    pub notes: String,
-    #[serde(default)]
-    pub pub_date: String,
-    pub url: String,
-    #[serde(default)]
-    pub sha256: String,
-    #[serde(default)]
-    pub size: Option<u64>,
-}
+pub use protocol::release::Feed;
 
 /// Ergebnis einer Prüfung – wird direkt an die Oberfläche gegeben.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -65,35 +51,7 @@ pub struct Progress {
 
 /// `0.10.0` ist neuer als `0.9.0`, und `0.3.0` neuer als `0.3.0-beta.1`.
 pub fn compare(a: &str, b: &str) -> Ordering {
-    fn split(v: &str) -> (Vec<u64>, &str) {
-        let core = v.trim().trim_start_matches(['v', 'V']);
-        let (core, pre) = core.split_once('-').unwrap_or((core, ""));
-        let nums = core
-            .split('.')
-            .map(|p| {
-                p.chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect::<String>()
-                    .parse()
-                    .unwrap_or(0)
-            })
-            .collect();
-        (nums, pre)
-    }
-    let ((an, ap), (bn, bp)) = (split(a), split(b));
-    for i in 0..an.len().max(bn.len()) {
-        let ord = an.get(i).unwrap_or(&0).cmp(bn.get(i).unwrap_or(&0));
-        if ord != Ordering::Equal {
-            return ord;
-        }
-    }
-    // Vorabversionen sind älter als die fertige Version gleicher Nummer.
-    match (ap.is_empty(), bp.is_empty()) {
-        (true, true) => Ordering::Equal,
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-        (false, false) => ap.cmp(bp),
-    }
+    protocol::release::compare_versions(a, b)
 }
 
 pub fn is_newer(candidate: &str, current: &str) -> bool {
@@ -186,9 +144,11 @@ pub async fn download(cfg: &UpdateConfig, feed: &Feed, on_progress: impl Fn(Prog
     let mut total = feed.size.unwrap_or(0);
     let mut bytes = 0u64;
 
+    // Relative Installer-URLs gelten relativ zum Feed (so liefert sie der eigene Server).
+    let url = crate::modpack::to_url(cfg.feed.trim())?.join(feed.url.trim())?;
     let result: Result<()> = async {
         let res = http()?
-            .get(feed.url.trim())
+            .get(url)
             .timeout(Duration::from_secs(600))
             .send()
             .await?;

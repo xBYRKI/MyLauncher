@@ -1,4 +1,7 @@
-//! Gemeinsame Typen für den Wegpunkt-Sync zwischen Launcher und Sync-Server.
+//! Gemeinsame Typen von Launcher und Server: Wegpunkt-Sync, Modpack-Manifest, Update-Feed.
+
+pub mod pack;
+pub mod release;
 
 use serde::{Deserialize, Serialize};
 

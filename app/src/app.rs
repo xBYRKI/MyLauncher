@@ -67,6 +67,8 @@ enum Msg {
     PackDone(String),
     PackPlan(String, backend::Res<PackPlan>),
     News(Vec<Value>),
+    /// Server-Konfiguration geladen – `true`, wenn sie sich geändert hat.
+    RemoteConfig(bool),
     Server(usize, ServerStatus),
     Update(UpdateStatus),
     UpdateProgress(update::Progress),
@@ -251,6 +253,7 @@ impl App {
             was_focused: true,
         };
         app.rewatch();
+        app.refresh_remote();
         app.refresh_prism();
         app.load_news();
         app.load_packs();
@@ -327,6 +330,11 @@ impl App {
         self.spawn(async { Msg::News(backend::news().await) });
     }
 
+    /// Packs, News und Server vom eigenen Server holen (falls `remoteConfig` gesetzt ist).
+    fn refresh_remote(&self) {
+        self.spawn(async { Msg::RemoteConfig(backend::refresh_remote_config().await) });
+    }
+
     fn load_waypoints(&self) {
         self.spawn(async { Msg::Waypoints(backend::waypoint_overview().await) });
     }
@@ -342,6 +350,7 @@ impl App {
     /// Neue Modpack- und Launcher-Versionen von selbst bemerken.
     fn background_check(&mut self) {
         self.last_check = Instant::now();
+        self.refresh_remote();
         self.load_packs();
         if self.settings.auto_update_launcher {
             self.check_update(true);
@@ -577,6 +586,15 @@ impl App {
                 }
             }
             Msg::News(items) => self.news = Some(Arc::new(items)),
+            Msg::RemoteConfig(changed) => {
+                if changed {
+                    self.cfg = config::load_launcher_config();
+                    self.servers = vec![None; self.cfg.servers.len()];
+                    self.ping_servers();
+                    self.load_news();
+                    self.load_packs();
+                }
+            }
             Msg::Server(i, s) => {
                 if let Some(slot) = self.servers.get_mut(i) {
                     *slot = Some(s);

@@ -3,14 +3,21 @@
 //! `launcher.config.json` wird in die Exe eingebaut. Eine Datei gleichen Namens in
 //! `%APPDATA%\MyLauncher\` überschreibt einzelne Felder, damit man Packs/Server ohne
 //! Neu-Bauen ändern kann. Einstellungen liegen in `%APPDATA%\MyLauncher\settings.json`.
+//!
+//! Ist `remoteConfig` gesetzt, kommen Packs, News und Server zusätzlich vom eigenen Server
+//! (Admin-Oberfläche). Reihenfolge: eingebaut → Server → Datei in `%APPDATA%`.
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const BUNDLED_CONFIG: &str = include_str!("../../../launcher.config.json");
+/// Zuletzt vom Server geladene Konfiguration – damit der Launcher auch offline startet.
+const REMOTE_CACHE: &str = "remote-config.json";
+/// Felder, die der Server nie setzen darf (siehe [`update_config`]).
+const REMOTE_BLOCKED: &[&str] = &["update", "remoteConfig"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -67,6 +74,9 @@ pub struct LauncherConfig {
     pub hidden_instances: Vec<String>,
     /// Vorgabe für den Wegpunkt-Sync-Server, falls in den Einstellungen leer.
     pub waypoint_server: String,
+    /// URL der Launcher-Konfiguration auf dem eigenen Server (`…/launcher/config.json`).
+    /// Leer = nur eingebaute und lokale Konfiguration.
+    pub remote_config: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -152,13 +162,95 @@ pub fn merge(base: &mut Value, patch: &Value) {
     }
 }
 
+fn bundled_value() -> Value {
+    serde_json::from_str(BUNDLED_CONFIG).unwrap_or(Value::Object(Default::default()))
+}
+
+/// URL der Server-Konfiguration; die Datei in `%APPDATA%` darf sie ersetzen.
+fn remote_url(bundled: &Value, over: Option<&Value>) -> String {
+    over.and_then(|o| o["remoteConfig"].as_str())
+        .or_else(|| bundled["remoteConfig"].as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn cached_remote(url: &str) -> Option<Value> {
+    let cache = read_json(&app_dir().join(REMOTE_CACHE))?;
+    (cache["source"].as_str() == Some(url)).then(|| cache["config"].clone())
+}
+
 pub fn load_launcher_config() -> LauncherConfig {
-    let mut value: Value =
-        serde_json::from_str(BUNDLED_CONFIG).unwrap_or(Value::Object(Default::default()));
-    if let Some(over) = read_json(&app_dir().join("launcher.config.json")) {
-        merge(&mut value, &over);
+    let mut value = bundled_value();
+    let over = read_json(&app_dir().join("launcher.config.json"));
+    let url = remote_url(&value, over.as_ref());
+    if !url.is_empty() {
+        if let Some(remote) = cached_remote(&url) {
+            merge(&mut value, &remote);
+        }
+    }
+    if let Some(over) = &over {
+        merge(&mut value, over);
     }
     serde_json::from_value(value).unwrap_or_default()
+}
+
+/// Server-Antwort aufbereiten: gesperrte Felder raus, relative URLs auflösen.
+fn clean_remote(mut remote: Value, base: &url::Url) -> Result<Value> {
+    let Value::Object(map) = &mut remote else {
+        bail!("Server-Konfiguration ist kein JSON-Objekt");
+    };
+    for key in REMOTE_BLOCKED {
+        map.remove(*key);
+    }
+    if let Some(packs) = map.get_mut("packs").and_then(Value::as_array_mut) {
+        for pack in packs {
+            if let Some(abs) = pack["manifest"].as_str().and_then(|m| base.join(m).ok()) {
+                pack["manifest"] = abs.to_string().into();
+            }
+        }
+    }
+    if let Some(abs) = map
+        .get("newsUrl")
+        .and_then(Value::as_str)
+        .filter(|u| !u.is_empty())
+        .and_then(|u| base.join(u).ok())
+    {
+        map.insert("newsUrl".into(), abs.to_string().into());
+    }
+    Ok(remote)
+}
+
+/// Konfiguration vom Server holen und für [`load_launcher_config`] ablegen.
+/// `true`, wenn sie sich seit dem letzten Abruf geändert hat.
+pub async fn refresh_remote_config() -> Result<bool> {
+    let url = remote_url(
+        &bundled_value(),
+        read_json(&app_dir().join("launcher.config.json")).as_ref(),
+    );
+    if url.is_empty() {
+        return Ok(false);
+    }
+    let text = crate::modpack::fetch_source(&url)
+        .await
+        .with_context(|| format!("Launcher-Konfiguration nicht erreichbar: {url}"))?;
+    let remote: Value =
+        serde_json::from_str(&text).context("Server-Konfiguration ist kein gültiges JSON")?;
+    let remote = clean_remote(remote, &crate::modpack::to_url(&url)?)?;
+    if cached_remote(&url).as_ref() == Some(&remote) {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(app_dir())?;
+    let cache = serde_json::json!({
+        "source": url,
+        "fetchedAt": crate::now_millis(),
+        "config": remote,
+    });
+    std::fs::write(
+        app_dir().join(REMOTE_CACHE),
+        serde_json::to_string_pretty(&cache)?,
+    )?;
+    Ok(true)
 }
 
 /// Update-Einstellungen – absichtlich **nur** aus der eingebauten Config.
@@ -167,8 +259,7 @@ pub fn load_launcher_config() -> LauncherConfig {
 /// ersetzen kann, kann dem Launcher jede beliebige Exe als Update unterschieben.
 /// Zum Testen gegen einen anderen Feed gibt es `MYLAUNCHER_UPDATE_FEED`.
 pub fn update_config() -> UpdateConfig {
-    let value: Value =
-        serde_json::from_str(BUNDLED_CONFIG).unwrap_or(Value::Object(Default::default()));
+    let value = bundled_value();
     let mut cfg: UpdateConfig =
         serde_json::from_value(value["update"].clone()).unwrap_or_default();
     if let Some(feed) = std::env::var_os("MYLAUNCHER_UPDATE_FEED") {
@@ -209,4 +300,39 @@ pub fn waypoint_server_url(settings: &Settings, cfg: &LauncherConfig) -> String 
         settings.waypoints.server_url.trim()
     };
     url.trim_end_matches('/').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn server_darf_update_nicht_setzen() {
+        let base = url::Url::parse("https://mc.example.net/launcher/config.json").unwrap();
+        let remote = json!({
+            "update": { "feed": "https://boese.example/update.json", "signerThumbprint": "00" },
+            "remoteConfig": "https://boese.example/config.json",
+            "packs": [
+                { "manifest": "packs/survival/manifest.json" },
+                { "manifest": "https://cdn.example.net/x/manifest.json" }
+            ],
+            "newsUrl": "news.json"
+        });
+        let clean = clean_remote(remote, &base).unwrap();
+        assert!(clean.get("update").is_none());
+        assert!(clean.get("remoteConfig").is_none());
+        assert_eq!(
+            clean["packs"][0]["manifest"],
+            "https://mc.example.net/launcher/packs/survival/manifest.json"
+        );
+        assert_eq!(clean["packs"][1]["manifest"], "https://cdn.example.net/x/manifest.json");
+        assert_eq!(clean["newsUrl"], "https://mc.example.net/launcher/news.json");
+    }
+
+    #[test]
+    fn nur_objekte_werden_angenommen() {
+        let base = url::Url::parse("https://mc.example.net/").unwrap();
+        assert!(clean_remote(json!([1, 2]), &base).is_err());
+    }
 }

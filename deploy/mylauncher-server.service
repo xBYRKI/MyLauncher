@@ -1,0 +1,28 @@
+[Unit]
+Description=MyLauncher-Server (Modpacks, Launcher-Updates, Wegpunkt-Sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mylauncher
+Group=mylauncher
+# Adresse, Datenordner, Admin-Passwort, öffentliche URL, Wegpunkt-Tokens
+EnvironmentFile=/etc/mylauncher/server.env
+ExecStart=/opt/mylauncher/mylauncher-server
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/mylauncher
+
+[Install]
+WantedBy=multi-user.target

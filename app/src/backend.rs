@@ -256,6 +256,14 @@ pub async fn update_install(on_progress: impl Fn(update::Progress)) -> Res<Strin
     Ok(feed.version)
 }
 
+// ---------- Server-Konfiguration ----------
+
+/// Holt Packs, News und Server vom eigenen Server. Fehler (offline, Server down) sind
+/// unkritisch – dann gilt der zuletzt geladene Stand weiter.
+pub async fn refresh_remote_config() -> bool {
+    config::refresh_remote_config().await.unwrap_or(false)
+}
+
 // ---------- News ----------
 
 pub async fn news() -> Vec<Value> {

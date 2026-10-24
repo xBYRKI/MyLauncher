@@ -8,10 +8,26 @@
       "description": "Änderungstext für das Update (erscheint im Launcher)"
     },
     {
+      "id": "packId",
+      "type": "promptString",
+      "description": "Modpack-ID auf dem Server (Kleinbuchstaben, Ziffern, - und _)"
+    },
+    {
+      "id": "packDir",
+      "type": "promptString",
+      "description": "Lokaler Pack-Ordner (mit files\\ und defaults\\ oder direkt die Spieldateien)"
+    },
+    {
       "id": "waypointToken",
       "type": "promptString",
       "description": "Team-Token für den lokalen Wegpunkt-Server (team:geheim)",
       "default": "test:geheim"
+    },
+    {
+      "id": "adminPassword",
+      "type": "promptString",
+      "description": "Admin-Passwort für die Oberfläche unter http://127.0.0.1:8787/admin/ (mind. 12 Zeichen)",
+      "default": "admin-lokal-test"
     }
   ],
   "tasks": [
@@ -57,6 +73,32 @@
       "problemMatcher": ["$rustc"]
     },
     {
+      "label": "Eigener Server: Deploy (SSH)",
+      "detail": "Baut mylauncher-server für Linux und installiert ihn laut scripts/server.config.json",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-server.ps1",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Eigener Server: Admin-Oberfläche (SSH-Tunnel)",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/server-admin.ps1",
+      "problemMatcher": []
+    },
+    {
+      "label": "Eigener Server: Log",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/server-logs.ps1",
+      "problemMatcher": []
+    },
+    {
+      "label": "Eigener Server: Modpack hochladen",
+      "detail": "Gleicht den Ordner per SHA1 ab, lädt nur Änderungen hoch und veröffentlicht",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-pack.ps1 -Pack \"${input:packId}\" -Dir \"${input:packDir}\" -Notes \"${input:notes}\"",
+      "problemMatcher": []
+    },
+    {
       "label": "Prüfen: Tests",
       "type": "shell",
       "command": "cargo test --workspace",
@@ -70,9 +112,9 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "Wegpunkt-Server: lokal starten",
+      "label": "Server: lokal starten",
       "type": "shell",
-      "command": "cargo run -p waypoint-server -- --bind 127.0.0.1:8787 --data target/waypoint-data --token ${input:waypointToken}",
+      "command": "cargo run -p mylauncher-server -- --bind 127.0.0.1:8787 --data target/server-data --token ${input:waypointToken} --admin-password ${input:adminPassword}",
       "isBackground": true,
       "problemMatcher": []
     },
@@ -80,9 +122,19 @@
       "label": "Wegpunkt-Sync: Integrationstest",
       "detail": "Erwartet den lokalen Wegpunkt-Server mit Token test:geheim",
       "type": "shell",
-      "command": "cargo test -p launcher-core -- --ignored",
+      "command": "cargo test -p launcher-core --test waypoint_sync -- --ignored",
       "options": {
         "env": { "WAYPOINT_TEST_URL": "http://127.0.0.1:8787", "WAYPOINT_TEST_TOKEN": "geheim" }
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Modpack-Server: Integrationstest",
+      "detail": "Erwartet den lokalen Server mit mindestens einem veröffentlichten, sichtbaren Modpack",
+      "type": "shell",
+      "command": "cargo test -p launcher-core --test remote_config -- --ignored",
+      "options": {
+        "env": { "LAUNCHER_TEST_URL": "http://127.0.0.1:8787" }
       },
       "problemMatcher": ["$rustc"]
     },

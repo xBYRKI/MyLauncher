@@ -1,0 +1,12 @@
+{
+  "host": "gaming.stephanides-it.at",
+  "user": "root",
+  "port": 22,
+  "identityFile": "",
+  "publicUrl": "https://launcher.stephanides-it.at",
+  "adminPassword": "",
+  "waypointTokens": [],
+  "proxy": "caddy",
+  "exposeAdmin": false,
+  "tunnelPort": 18787
+}

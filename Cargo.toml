@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/protocol", "crates/core", "crates/server", "app"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["BYRKI"]
 license = "MIT"
@@ -20,4 +20,6 @@ launcher-core = { path = "crates/core" }
 lto = true
 codegen-units = 1
 strip = true
-opt-level = "s"
+# Nicht "s": größenoptimierte Builds erkennt Bitdefender (und alle Scanner mit seiner Engine)
+# als Gen:Variant.Fugrafa – mit opt-level 3 ist der Launcher sauber.
+opt-level = 3

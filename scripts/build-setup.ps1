@@ -11,6 +11,8 @@
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $Root 'dist'
+# Eigener Build-Ordner wie in build-signed.ps1 (gesperrte target\release\mylauncher.exe → LNK1104)
+$env:CARGO_TARGET_DIR = Join-Path $Root 'target\publish'
 
 $cargo = Get-Content (Join-Path $Root 'Cargo.toml') -Raw
 if ($cargo -notmatch '(?s)\[workspace\.package\].*?version\s*=\s*"([^"]+)"') { throw 'Version in Cargo.toml nicht gefunden.' }
@@ -30,7 +32,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Launcher-Build fehlgeschlagen' }
 
 New-Item -ItemType Directory -Force $Dist | Out-Null
 $out = Join-Path $Dist "MyLauncher_${version}_x64-setup-unsigned.exe"
-& $makensis -V2 "-DVERSION=$version" "-DSRC=$(Join-Path $Root 'target\release')" "-DOUTFILE=$out" (Join-Path $Root 'installer\mylauncher.nsi')
+& $makensis -V2 "-DVERSION=$version" "-DSRC=$(Join-Path $env:CARGO_TARGET_DIR 'release')" "-DOUTFILE=$out" (Join-Path $Root 'installer\mylauncher.nsi')
 if ($LASTEXITCODE -ne 0) { throw 'makensis fehlgeschlagen' }
 
 Write-Host "Fertig: $out ($([math]::Round((Get-Item $out).Length / 1MB, 1)) MB)" -ForegroundColor Green

@@ -16,10 +16,12 @@
   "servers": [
     { "name": "Minecraft-Server", "address": "gaming.stephanides-it.at", "instance": "26.3" }
   ],
+  
   "hiddenInstances": ["OPSUCHT"],
   "waypointServer": "",
+  "remoteConfig": "https://launcher.stephanides-it.at/launcher/config.json",
   "update": {
-    "feed": "https://github.com/xBYRKI/MyLauncher/releases/latest/download/update.json",
+    "feed": "https://launcher.stephanides-it.at/launcher/update.json",
     "signerThumbprint": "7C72A42764582F617CF3BD4F22231ED974B3EA61"
   }
 }
