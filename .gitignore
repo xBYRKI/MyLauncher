@@ -1,3 +1,6 @@
 /target/
 /dist/
 /scripts/server.config.json
+
+# Claude Code – persönliche Einstellungen
+.claude/settings.local.json
