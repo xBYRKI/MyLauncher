@@ -16,6 +16,7 @@ use launcher_core::config::{self, LauncherConfig, Settings};
 use launcher_core::modpack::{ChangeKind, PackPlan, PackStatus, Progress};
 use launcher_core::ping::{self, MotdPart, ServerStatus};
 use launcher_core::prism::{Account, Instance, Prism};
+use launcher_core::transfer::{Parts, Summary};
 use launcher_core::update::{self, UpdateStatus};
 use notify::Watcher;
 use serde_json::{json, Value};
@@ -65,6 +66,7 @@ enum Msg {
     PackProgress(String, Progress),
     PackDone(String),
     PackPlan(String, backend::Res<PackPlan>),
+    TransferDone(backend::Res<Summary>),
     News(Vec<Value>),
     /// Server-Konfiguration geladen – `true`, wenn sie sich geändert hat.
     RemoteConfig(bool),
@@ -126,6 +128,15 @@ enum View {
     Settings,
 }
 
+/// Dialog „Einstellungen übernehmen“ für die Instanz `to`.
+struct Transfer {
+    to: String,
+    to_name: String,
+    from: Option<String>,
+    parts: Parts,
+    busy: bool,
+}
+
 struct Toast {
     tone: Tone,
     text: String,
@@ -178,6 +189,7 @@ pub struct App {
     view: View,
     search: String,
     plan: Option<(PackStatus, PackPlan)>,
+    transfer: Option<Transfer>,
     toasts: Vec<Toast>,
 
     images: HashMap<String, Img>,
@@ -226,6 +238,7 @@ impl App {
             view: View::Home,
             search: String::new(),
             plan: None,
+            transfer: None,
             toasts: vec![],
             images: HashMap::new(),
             bg: theme::deepslate(&ctx),
@@ -455,6 +468,20 @@ impl App {
     }
 
     /// `quiet` = Hintergrundprüfung: meldet sich nur, wenn eine neue Version auftaucht.
+    fn open_transfer(&mut self, to: &str, to_name: &str) {
+        // Zuletzt gespielte andere Instanz vorschlagen
+        let from = self.instances.iter().find(|i| i.id != to).map(|i| i.id.clone());
+        self.transfer = Some(Transfer { to: to.into(), to_name: to_name.into(), from, parts: Parts::default(), busy: false });
+    }
+
+    fn run_transfer(&mut self) {
+        let Some(t) = self.transfer.as_mut() else { return };
+        let Some(from) = t.from.clone() else { return };
+        t.busy = true;
+        let (to, parts) = (t.to.clone(), t.parts);
+        self.spawn(async move { Msg::TransferDone(backend::copy_settings(from, to, parts).await) });
+    }
+
     fn check_update(&mut self, quiet: bool) {
         if self.update_busy || self.update_checking {
             return;
@@ -521,6 +548,30 @@ impl App {
                     Err(e) => self.toast(Tone::Error, e),
                 }
             }
+            Msg::TransferDone(r) => match r {
+                Ok(sum) => {
+                    self.transfer = None;
+                    let mut parts = vec![];
+                    if sum.files > 0 {
+                        parts.push(format!("{} Einstellungsdatei{}", sum.files, if sum.files == 1 { "" } else { "en" }));
+                    }
+                    if sum.packs > 0 {
+                        parts.push(format!("{} Paket{}", sum.packs, if sum.packs == 1 { "" } else { "e" }));
+                    }
+                    let text = if parts.is_empty() {
+                        "Nichts übernommen – die Quelle hat dazu keine Dateien.".into()
+                    } else {
+                        format!("Übernommen: {}", parts.join(", "))
+                    };
+                    self.toast(Tone::Ok, text);
+                }
+                Err(e) => {
+                    if let Some(t) = self.transfer.as_mut() {
+                        t.busy = false;
+                    }
+                    self.toast(Tone::Error, e);
+                }
+            },
             Msg::News(items) => self.news = Some(Arc::new(items)),
             Msg::RemoteConfig(changed) => {
                 if changed {
@@ -1264,6 +1315,9 @@ impl App {
                     let r = backend::show_in_prism(Some(&inst.id));
                     self.report(r);
                 }
+                if ui.add(McButton::new("").icon(Icon::Copy).tooltip("Einstellungen aus anderer Instanz übernehmen")).clicked() {
+                    self.open_transfer(&inst.id, &inst.name);
+                }
                 if ui.add(McButton::new("").icon(Icon::Folder).tooltip("Ordner öffnen")).clicked() {
                     let r = backend::open_folder(Some(&inst.id));
                     self.report(r);
@@ -1338,6 +1392,13 @@ impl App {
                                     .clicked()
                                 {
                                     self.review_pack(pack);
+                                }
+                                if installed
+                                    && ui
+                                        .add(McButton::new("").icon(Icon::Copy).tooltip("Einstellungen und Ressourcenpakete aus einer anderen Instanz übernehmen"))
+                                        .clicked()
+                                {
+                                    self.open_transfer(&pack.instance_id, &pack.name);
                                 }
                             });
                         }
@@ -1417,6 +1478,68 @@ impl App {
             self.play_pack(&pack, true);
         } else if close {
             self.plan = None;
+        }
+    }
+
+    fn ui_transfer_modal(&mut self, ctx: &egui::Context) {
+        let instances = self.instances.clone();
+        let Some(t) = self.transfer.as_mut() else { return };
+        let mut close = false;
+        let mut apply = false;
+        let frame = egui::Frame::new()
+            .fill(Color32::from_rgb(0x16, 0x16, 0x18))
+            .stroke(Stroke::new(theme::PX, Color32::BLACK))
+            .inner_margin(Margin::same(18));
+        let resp = egui::Modal::new(Id::new("transfer"))
+            .frame(frame)
+            .backdrop_color(Color32::from_black_alpha(170))
+            .show(ctx, |ui| {
+                ui.set_width(520.0_f32.min(ctx.content_rect().width() - 80.0));
+                title(ui, &format!("Einstellungen übernehmen – {}", t.to_name), 17.0, theme::WHITE);
+                muted(ui, "Kopiert deine Einstellungen aus einer anderen Prism-Instanz hierher.");
+                ui.add_space(8.0);
+
+                field_label(ui, "Aus Instanz");
+                let sources: Vec<&Instance> = instances.iter().filter(|i| i.id != t.to).collect();
+                let label = |i: &Instance| format!("{} ({})", i.name, i.mc_version);
+                let source = t.from.as_ref().and_then(|id| sources.iter().find(|i| &i.id == id).copied());
+                let current = source.map(label).unwrap_or_else(|| "Instanz wählen …".into());
+                egui::ComboBox::from_id_salt("transfer-from").width(340.0).selected_text(current).show_ui(ui, |ui| {
+                    for i in &sources {
+                        ui.selectable_value(&mut t.from, Some(i.id.clone()), label(i));
+                    }
+                });
+                let target_mc = instances.iter().find(|i| i.id == t.to).map(|i| i.mc_version.as_str());
+                if let (Some(a), Some(b)) = (source.map(|i| i.mc_version.as_str()), target_mc) {
+                    if a != b {
+                        ui.label(RichText::new(format!("Andere Minecraft-Version ({a} → {b}) – manche Pakete können als inkompatibel gelten.")).color(theme::GOLD));
+                    }
+                }
+
+                ui.add_space(8.0);
+                field_label(ui, "Was übernehmen?");
+                theme::checkbox(ui, &mut t.parts.options, "Optionen & Tastenbelegung (inkl. aktiver Ressourcenpakete)");
+                theme::checkbox(ui, &mut t.parts.resource_packs, "Ressourcenpakete");
+                theme::checkbox(ui, &mut t.parts.shader_packs, "Shaderpakete");
+                theme::checkbox(ui, &mut t.parts.servers, "Serverliste (ersetzt die vorhandene)");
+                ui.add_space(4.0);
+                muted(ui, "Vorhandene Pakete bleiben unangetastet. Überschriebene Dateien werden als .bak gesichert.");
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let ready = t.from.is_some() && t.parts.any() && !t.busy;
+                    let label = if t.busy { "Kopiert …" } else { "Übernehmen" };
+                    apply = ui.add(McButton::play(label).icon(Icon::Copy).enabled(ready)).clicked();
+                    close = ui.add(McButton::new("Abbrechen").enabled(!t.busy)).clicked();
+                });
+            });
+        if resp.should_close() && !t.busy {
+            close = true;
+        }
+        if apply {
+            self.run_transfer();
+        } else if close {
+            self.transfer = None;
         }
     }
 
@@ -1804,6 +1927,7 @@ impl eframe::App for App {
 
         let ctx = ui.ctx().clone();
         self.ui_plan_modal(&ctx);
+        self.ui_transfer_modal(&ctx);
         self.ui_toasts(&ctx);
         self.resize_edges(ui);
         // Esc schließt den Dialog (Modal erledigt das selbst), Rahmen um das ganze Fenster

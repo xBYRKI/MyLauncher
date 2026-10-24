@@ -7,6 +7,7 @@ pub mod ini;
 pub mod modpack;
 pub mod ping;
 pub mod prism;
+pub mod transfer;
 pub mod update;
 pub mod waypoints;
 pub mod xaero;
