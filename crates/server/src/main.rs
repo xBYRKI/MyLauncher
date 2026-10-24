@@ -10,6 +10,7 @@
 //!
 //! | Pfad | |
 //! |---|---|
+//! | `/`, `/download` | Download-Seite, fester Link auf den aktuellen Installer |
 //! | `/launcher/…` | Packs, News, Server, Update-Feed für den Launcher (öffentlich) |
 //! | `/admin/` | Admin-Oberfläche (Admin-Passwort) |
 
@@ -160,7 +161,8 @@ async fn main() -> Result<()> {
         public_url: args.public_url,
     });
     let app = Router::new()
-        .route("/", get(|| async { Redirect::to("/admin/") }))
+        .route("/", get(public::home))
+        .route("/download", get(public::download))
         .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
         .route("/admin/", get(admin::index))
         .nest("/launcher", public::router())

@@ -289,6 +289,21 @@ impl Store {
         self.root.join("packs").join(id).join(format!("{version}.json"))
     }
 
+    /// Release, das `update.json` gerade anbietet.
+    pub fn current_release(&self) -> Option<&Release> {
+        let v = self.releases.current.as_ref()?;
+        self.releases.list.iter().find(|r| &r.version == v)
+    }
+
+    /// Download-Pfad des Installers, relativ zur Server-Wurzel.
+    pub fn installer_path(r: &Release) -> String {
+        format!(
+            "/launcher/updates/{}/{}",
+            url_segment(&r.version),
+            url_segment(&r.file)
+        )
+    }
+
     pub fn release_path(&self, r: &Release) -> PathBuf {
         self.root.join("releases").join(&r.version).join(&r.file)
     }

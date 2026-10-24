@@ -12,6 +12,7 @@ mylauncher.exe (Rust, egui)
   └─ Update    prüft update.json, lädt den Installer und akzeptiert nur unsere Signatur
 
 mylauncher-server
+  ├─ /            Download-Seite für Spieler, /download = aktueller Installer
   ├─ /admin/      Admin-Oberfläche: Modpacks, News, Server, Launcher-Updates
   └─ /launcher/   Konfiguration, Manifeste, Dateien und update.json für den Launcher
 ```
@@ -108,7 +109,11 @@ Auch per Umgebung: `MYLAUNCHER_ADMIN_PASSWORD`, `MYLAUNCHER_PUBLIC_URL`, `WAYPOI
 `--public-url` sollte gesetzt sein – daraus entstehen die absoluten Adressen in `update.json`.
 Ohne die Angabe nimmt der Server `X-Forwarded-Host`/`Host` der Anfrage.
 
-Die Oberfläche liegt unter **`https://mc.example.net/admin/`**:
+Spieler laden den Launcher unter **`https://mc.example.net/`** herunter. Die Seite zeigt Name, Version und
+Versionshinweise des Updates, das gerade angeboten wird. **`https://mc.example.net/download`** ist ein fester Link,
+der immer auf diesen Installer zeigt – den kann man verschicken.
+
+Die Admin-Oberfläche liegt unter **`https://mc.example.net/admin/`**:
 
 | Bereich | |
 |---|---|

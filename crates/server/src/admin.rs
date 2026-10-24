@@ -34,8 +34,8 @@ const MAX_UPLOAD: u64 = 2 * 1024 * 1024 * 1024;
 const INDEX_HTML: &str = include_str!("admin/index.html");
 const APP_JS: &str = include_str!("admin/app.js");
 const APP_CSS: &str = include_str!("admin/app.css");
-const FONT: &[u8] = include_bytes!("../../../app/assets/Monocraft.ttf");
-const LOGO: &[u8] = include_bytes!("../../../app/assets/logo.png");
+pub(crate) const FONT: &[u8] = include_bytes!("../../../app/assets/Monocraft.ttf");
+pub(crate) const LOGO: &[u8] = include_bytes!("../../../app/assets/logo.png");
 
 // ---------- Anmeldung ----------
 
