@@ -6,7 +6,7 @@ use std::time::Duration;
 use launcher_core::config::{self, Settings};
 use launcher_core::modpack::{self, PackPlan, PackStatus, Progress, SyncResult};
 use launcher_core::prism::{self, Account, Instance, Prism};
-use launcher_core::transfer::{self, Parts, Summary};
+use launcher_core::transfer::{self, Parts, Summary, WorldTargets};
 use launcher_core::update::{self, UpdateStatus};
 use launcher_core::waypoints::{self, SyncOptions};
 use serde_json::Value;
@@ -285,8 +285,8 @@ pub async fn news() -> Vec<Value> {
 // ---------- Einstellungen übernehmen ----------
 
 /// Optionen, Ressourcenpakete usw. aus einer anderen Instanz kopieren.
-pub async fn copy_settings(from: String, to: String, parts: Parts) -> Res<Summary> {
-    tokio::task::spawn_blocking(move || transfer::copy_between(&current_prism(), &from, &to, parts))
+pub async fn copy_settings(from: String, to: String, parts: Parts, worlds: WorldTargets) -> Res<Summary> {
+    tokio::task::spawn_blocking(move || transfer::copy_between(&current_prism(), &from, &to, parts, &worlds))
         .await
         .map_err(err)?
         .map_err(err)

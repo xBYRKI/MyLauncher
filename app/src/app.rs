@@ -16,7 +16,8 @@ use launcher_core::config::{self, LauncherConfig, Settings};
 use launcher_core::modpack::{ChangeKind, PackPlan, PackStatus, Progress};
 use launcher_core::ping::{self, MotdPart, ServerStatus};
 use launcher_core::prism::{Account, Instance, Prism};
-use launcher_core::transfer::{Parts, Summary};
+use launcher_core::transfer::{self, Parts, Summary, WorldTargets};
+use launcher_core::xaero;
 use launcher_core::update::{self, UpdateStatus};
 use notify::Watcher;
 use serde_json::{json, Value};
@@ -135,6 +136,11 @@ struct Transfer {
     from: Option<String>,
     parts: Parts,
     busy: bool,
+    /// Xaero-Weltordner von Quelle und Ziel, geladen für `worlds_of`
+    worlds_of: Option<String>,
+    source_worlds: Vec<String>,
+    target_worlds: Vec<String>,
+    world_targets: WorldTargets,
 }
 
 struct Toast {
@@ -471,15 +477,38 @@ impl App {
     fn open_transfer(&mut self, to: &str, to_name: &str) {
         // Zuletzt gespielte andere Instanz vorschlagen
         let from = self.instances.iter().find(|i| i.id != to).map(|i| i.id.clone());
-        self.transfer = Some(Transfer { to: to.into(), to_name: to_name.into(), from, parts: Parts::default(), busy: false });
+        self.transfer = Some(Transfer {
+            to: to.into(),
+            to_name: to_name.into(),
+            from,
+            parts: Parts::default(),
+            busy: false,
+            worlds_of: None,
+            source_worlds: vec![],
+            target_worlds: vec![],
+            world_targets: WorldTargets::new(),
+        });
+    }
+
+    /// Xaero-Welten neu einlesen, wenn eine andere Quelle gewählt wurde.
+    fn refresh_transfer_worlds(&mut self) {
+        let Some(t) = self.transfer.as_mut() else { return };
+        if t.worlds_of == t.from {
+            return;
+        }
+        let prism = self.prism.clone().unwrap_or_else(backend::current_prism);
+        t.source_worlds = t.from.as_deref().map(|id| transfer::xaero_worlds(&prism, id)).unwrap_or_default();
+        t.target_worlds = transfer::xaero_worlds(&prism, &t.to);
+        t.world_targets = transfer::suggest_targets(&t.source_worlds, &t.target_worlds);
+        t.worlds_of = t.from.clone();
     }
 
     fn run_transfer(&mut self) {
         let Some(t) = self.transfer.as_mut() else { return };
         let Some(from) = t.from.clone() else { return };
         t.busy = true;
-        let (to, parts) = (t.to.clone(), t.parts);
-        self.spawn(async move { Msg::TransferDone(backend::copy_settings(from, to, parts).await) });
+        let (to, parts, worlds) = (t.to.clone(), t.parts, t.world_targets.clone());
+        self.spawn(async move { Msg::TransferDone(backend::copy_settings(from, to, parts, worlds).await) });
     }
 
     fn check_update(&mut self, quiet: bool) {
@@ -557,6 +586,12 @@ impl App {
                     }
                     if sum.packs > 0 {
                         parts.push(format!("{} Paket{}", sum.packs, if sum.packs == 1 { "" } else { "e" }));
+                    }
+                    if sum.waypoints > 0 {
+                        parts.push(format!("{} Wegpunkt{}", sum.waypoints, if sum.waypoints == 1 { "" } else { "e" }));
+                    }
+                    if sum.map_files > 0 {
+                        parts.push(format!("{} Kartendatei{}", sum.map_files, if sum.map_files == 1 { "" } else { "en" }));
                     }
                     let text = if parts.is_empty() {
                         "Nichts übernommen – die Quelle hat dazu keine Dateien.".into()
@@ -1315,7 +1350,7 @@ impl App {
                     let r = backend::show_in_prism(Some(&inst.id));
                     self.report(r);
                 }
-                if ui.add(McButton::new("").icon(Icon::Copy).tooltip("Einstellungen aus anderer Instanz übernehmen")).clicked() {
+                if ui.add(McButton::new("").icon(Icon::Copy).tooltip("Einstellungen, Wegpunkte und Karte aus anderer Instanz übernehmen")).clicked() {
                     self.open_transfer(&inst.id, &inst.name);
                 }
                 if ui.add(McButton::new("").icon(Icon::Folder).tooltip("Ordner öffnen")).clicked() {
@@ -1395,7 +1430,7 @@ impl App {
                                 }
                                 if installed
                                     && ui
-                                        .add(McButton::new("").icon(Icon::Copy).tooltip("Einstellungen und Ressourcenpakete aus einer anderen Instanz übernehmen"))
+                                        .add(McButton::new("").icon(Icon::Copy).tooltip("Einstellungen, Ressourcenpakete, Wegpunkte und Karte aus einer anderen Instanz übernehmen"))
                                         .clicked()
                                 {
                                     self.open_transfer(&pack.instance_id, &pack.name);
@@ -1482,6 +1517,7 @@ impl App {
     }
 
     fn ui_transfer_modal(&mut self, ctx: &egui::Context) {
+        self.refresh_transfer_worlds();
         let instances = self.instances.clone();
         let Some(t) = self.transfer.as_mut() else { return };
         let mut close = false;
@@ -1496,7 +1532,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_width(520.0_f32.min(ctx.content_rect().width() - 80.0));
                 title(ui, &format!("Einstellungen übernehmen – {}", t.to_name), 17.0, theme::WHITE);
-                muted(ui, "Kopiert deine Einstellungen aus einer anderen Prism-Instanz hierher.");
+                muted(ui, "Kopiert deine Einstellungen, Wegpunkte und Karten aus einer anderen Prism-Instanz hierher.");
                 ui.add_space(8.0);
 
                 field_label(ui, "Aus Instanz");
@@ -1522,8 +1558,41 @@ impl App {
                 theme::checkbox(ui, &mut t.parts.resource_packs, "Ressourcenpakete");
                 theme::checkbox(ui, &mut t.parts.shader_packs, "Shaderpakete");
                 theme::checkbox(ui, &mut t.parts.servers, "Serverliste (ersetzt die vorhandene)");
+                theme::checkbox(ui, &mut t.parts.waypoints, "Xaero-Wegpunkte (werden ergänzt, nichts geht verloren)");
+                theme::checkbox(ui, &mut t.parts.world_map, "Xaero-Weltkarte (bereits erkundete Gebiete)");
+                if t.parts.xaero() && t.from.is_some() {
+                    ui.add_space(4.0);
+                    if t.source_worlds.is_empty() {
+                        muted(ui, "Die Quelle hat keine Xaero-Wegpunkte oder -Karten.");
+                    } else {
+                        muted(ui, "Xaero speichert pro Serveradresse – hier legst du fest, wohin jede Welt kommt:");
+                        for world in &t.source_worlds {
+                            let choice = t.world_targets.get(world).cloned().unwrap_or_else(|| Some(world.clone()));
+                            let show = |c: &Option<String>| match c {
+                                Some(w) if w == world => format!("{} (gleicher Name)", xaero::display_name(w)),
+                                Some(w) => xaero::display_name(w),
+                                None => "nicht übernehmen".into(),
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(xaero::display_name(world)).color(theme::WHITE));
+                                ui.label("→");
+                                let mut picked = choice.clone();
+                                egui::ComboBox::from_id_salt(("transfer-world", world)).width(260.0).selected_text(show(&choice)).show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut picked, Some(world.clone()), show(&Some(world.clone())));
+                                    for w in t.target_worlds.iter().filter(|w| *w != world) {
+                                        ui.selectable_value(&mut picked, Some(w.clone()), show(&Some(w.clone())));
+                                    }
+                                    ui.selectable_value(&mut picked, None, show(&None));
+                                });
+                                if picked != choice {
+                                    t.world_targets.insert(world.clone(), picked);
+                                }
+                            });
+                        }
+                    }
+                }
                 ui.add_space(4.0);
-                muted(ui, "Vorhandene Pakete bleiben unangetastet. Überschriebene Dateien werden als .bak gesichert.");
+                muted(ui, "Vorhandene Pakete und Kartenkacheln bleiben unangetastet. Überschriebene Dateien werden als .bak gesichert.");
 
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {

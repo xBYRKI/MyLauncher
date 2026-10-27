@@ -1,14 +1,15 @@
 //! Spieleinstellungen aus einer anderen Prism-Instanz übernehmen: Optionen und Tastenbelegung,
-//! Ressourcen- und Shaderpakete, Serverliste. Damit muss niemand im neuen Modpack alles
-//! wieder von Hand einstellen.
+//! Ressourcen- und Shaderpakete, Serverliste, Xaero-Wegpunkte und -Weltkarte. Damit muss
+//! niemand im neuen Modpack alles wieder von Hand einstellen.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::prism::{self, Prism};
+use crate::xaero::{self, WaypointFile};
 
 /// Was übernommen werden soll.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,6 +20,10 @@ pub struct Parts {
     /// `shaderpacks/` samt gewähltem Shader (Iris/OptiFine)
     pub shader_packs: bool,
     pub servers: bool,
+    /// Xaero-Wegpunkte; werden mit vorhandenen zusammengeführt
+    pub waypoints: bool,
+    /// Bereits erkundete Kacheln der Xaero-Weltkarte
+    pub world_map: bool,
 }
 
 impl Default for Parts {
@@ -28,13 +33,19 @@ impl Default for Parts {
             resource_packs: true,
             shader_packs: true,
             servers: false,
+            waypoints: true,
+            world_map: true,
         }
     }
 }
 
 impl Parts {
     pub fn any(&self) -> bool {
-        self.options || self.resource_packs || self.shader_packs || self.servers
+        self.options || self.resource_packs || self.shader_packs || self.servers || self.xaero()
+    }
+
+    pub fn xaero(&self) -> bool {
+        self.waypoints || self.world_map
     }
 }
 
@@ -47,6 +58,42 @@ pub struct Summary {
     pub packs: usize,
     /// Pakete, die im Ziel schon lagen und unangetastet blieben
     pub skipped: usize,
+    /// Neu übernommene Wegpunkte
+    pub waypoints: usize,
+    /// Neu kopierte Dateien der Weltkarte
+    pub map_files: usize,
+}
+
+/// Ziel je Xaero-Weltordner der Quelle: `Some(ordner)` = dorthin, `None` = auslassen.
+/// Fehlt ein Ordner, landet er unter gleichem Namen. Nötig, wenn derselbe Server in den
+/// Instanzen unter verschiedenen Adressen eingetragen ist – Xaero legt pro Adresse einen
+/// eigenen Ordner an.
+pub type WorldTargets = BTreeMap<String, Option<String>>;
+
+/// Weltordner einer Instanz, für die Xaero Wegpunkte oder Karten hat.
+pub fn xaero_worlds(prism: &Prism, id: &str) -> Vec<String> {
+    prism::instance_dir(prism, id)
+        .map(|dir| xaero::world_folders(&prism::game_dir(&dir)))
+        .unwrap_or_default()
+}
+
+/// Vorschlag: Gibt es auf beiden Seiten genau einen Mehrspieler-Ordner ohne Gegenstück,
+/// ist es vermutlich derselbe Server unter anderer Adresse.
+pub fn suggest_targets(source: &[String], target: &[String]) -> WorldTargets {
+    let unmatched = |list: &[String], other: &[String]| -> Vec<String> {
+        list.iter()
+            .filter(|w| w.starts_with("Multiplayer_") && !other.contains(w))
+            .cloned()
+            .collect()
+    };
+    let mut out = WorldTargets::new();
+    if let ([from], [to]) = (
+        unmatched(source, target).as_slice(),
+        unmatched(target, source).as_slice(),
+    ) {
+        out.insert(from.clone(), Some(to.clone()));
+    }
+    out
 }
 
 /// Dateien im Format `schlüssel:wert`, die zusammengeführt statt ersetzt werden.
@@ -55,7 +102,13 @@ const OPTION_FILES: &[&str] = &["options.txt", "optionsof.txt"];
 const SHADER_FILES: &[&str] = &["config/iris.properties", "optionsshaders.txt"];
 
 /// Übernimmt die gewählten Teile von Instanz `from` nach `to`.
-pub fn copy_between(prism: &Prism, from: &str, to: &str, parts: Parts) -> Result<Summary> {
+pub fn copy_between(
+    prism: &Prism,
+    from: &str,
+    to: &str,
+    parts: Parts,
+    worlds: &WorldTargets,
+) -> Result<Summary> {
     let from_dir = prism::instance_dir(prism, from)?;
     let to_dir = prism::instance_dir(prism, to)?;
     if from_dir == to_dir {
@@ -69,10 +122,16 @@ pub fn copy_between(prism: &Prism, from: &str, to: &str, parts: Parts) -> Result
         &prism::game_dir(&from_dir),
         &prism::game_dir(&to_dir),
         parts,
+        worlds,
     )
 }
 
-pub fn copy_game_dir(from: &Path, to: &Path, parts: Parts) -> Result<Summary> {
+pub fn copy_game_dir(
+    from: &Path,
+    to: &Path,
+    parts: Parts,
+    worlds: &WorldTargets,
+) -> Result<Summary> {
     if !parts.any() {
         bail!("Nichts zum Übernehmen ausgewählt");
     }
@@ -106,7 +165,84 @@ pub fn copy_game_dir(from: &Path, to: &Path, parts: Parts) -> Result<Summary> {
     if parts.servers && replace_file(&from.join("servers.dat"), &to.join("servers.dat"))? {
         sum.files += 1;
     }
+    if parts.xaero() {
+        copy_xaero(from, to, parts, worlds, &mut sum)?;
+    }
     Ok(sum)
+}
+
+fn copy_xaero(
+    from: &Path,
+    to: &Path,
+    parts: Parts,
+    worlds: &WorldTargets,
+    sum: &mut Summary,
+) -> Result<()> {
+    let (wp_from, wp_to) = (xaero::minimap_root(from), xaero::minimap_root(to));
+    let (map_from, map_to) = (xaero::world_map_root(from), xaero::world_map_root(to));
+    for world in xaero::world_folders(from) {
+        let Some(target) = worlds.get(&world).cloned().unwrap_or(Some(world.clone())) else {
+            continue;
+        };
+        if target.is_empty() || target.contains(['/', '\\']) || target.starts_with('.') {
+            bail!("Ungültiger Zielordner: {target}");
+        }
+        if parts.waypoints {
+            sum.waypoints += copy_waypoints(&wp_from.join(&world), &wp_to.join(&target))?;
+        }
+        if parts.world_map {
+            sum.map_files += copy_missing(&map_from.join(&world), &map_to.join(&target))
+                .with_context(|| format!("Weltkarte von {world} nicht kopierbar"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Wegpunktdateien (`dim%…/*.txt`) einer Welt zusammenführen. Die Sync-Datei des Launchers
+/// bleibt bewusst zurück – sie beschreibt den Stand der Quell-Instanz.
+fn copy_waypoints(from: &Path, to: &Path) -> Result<usize> {
+    let files = xaero::world_files(from);
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let config = to.join("config.txt");
+    if !config.exists() {
+        replace_file(&from.join("config.txt"), &config)?;
+    }
+    let mut added = 0;
+    for (dim, stem, path) in files {
+        let Some(source) = WaypointFile::load(&path) else {
+            continue;
+        };
+        let dest = to.join(&dim).join(format!("{stem}.txt"));
+        let mut file = WaypointFile::load(&dest).unwrap_or_else(WaypointFile::new_empty);
+        let n = file.merge_from(&source);
+        if n == 0 {
+            continue;
+        }
+        backup(&dest)?;
+        std::fs::create_dir_all(to.join(&dim))?;
+        std::fs::write(&dest, file.render())
+            .with_context(|| format!("{} nicht schreibbar", dest.display()))?;
+        added += n;
+    }
+    Ok(added)
+}
+
+/// Alles kopieren, was im Ziel fehlt; vorhandene Dateien (z. B. neuere Kartenkacheln) bleiben.
+fn copy_missing(from: &Path, to: &Path) -> std::io::Result<usize> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        let mut n = 0;
+        for entry in std::fs::read_dir(from)?.flatten() {
+            n += copy_missing(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(n)
+    } else if from.is_file() && !to.exists() {
+        std::fs::copy(from, to).map(|_| 1)
+    } else {
+        Ok(0)
+    }
 }
 
 /// Vor dem Überschreiben eine Sicherung `<datei>.bak` anlegen.
@@ -257,7 +393,7 @@ mod tests {
         write(&to, "options.txt", "fov:0.0\n");
         write(&to, "resourcepacks/Schon da.zip", "ziel");
 
-        let sum = copy_game_dir(&from, &to, Parts::default()).unwrap();
+        let sum = copy_game_dir(&from, &to, Parts::default(), &WorldTargets::new()).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(to.join("options.txt")).unwrap(),
@@ -278,5 +414,57 @@ mod tests {
             "Serverliste ist nicht vorausgewählt"
         );
         assert_eq!((sum.files, sum.packs, sum.skipped), (1, 2, 1));
+    }
+
+    #[test]
+    fn xaero_wird_zusammengefuehrt_und_umbenannt() {
+        let root = tmp("xaero");
+        let (from, to) = (root.join("a"), root.join("b"));
+        let basis = "waypoint:Basis:B:1:64:2:0:false:0:gui.xaero_default:false:0:0:false\n";
+        write(
+            &from,
+            "xaero/minimap/Multiplayer_alt.example/dim%0/mw$default_1.txt",
+            &format!("#\n{basis}waypoint:Tod:D:5:~:5:0:false:1:gui.xaero_default:false:0:0:false\n"),
+        );
+        write(&from, "xaero/minimap/Multiplayer_alt.example/config.txt", "cfg");
+        write(&from, "xaero/minimap/Multiplayer_alt.example/mylauncher-sync.json", "{}");
+        write(&from, "xaero/world-map/Multiplayer_alt.example/null/mw$default/0_0.zip", "alt");
+        write(&from, "xaero/world-map/Multiplayer_alt.example/null/mw$default/1_0.zip", "neu");
+        let target = "xaero/minimap/Multiplayer_neu.example/dim%0/mw$default_1.txt";
+        write(
+            &to,
+            target,
+            &format!("#\n{basis}waypoint:Mine:M:9:~:9:3:false:0:gui.xaero_default:false:0:0:false\n"),
+        );
+        write(&to, "xaero/world-map/Multiplayer_neu.example/null/mw$default/0_0.zip", "ziel");
+
+        let targets = suggest_targets(&xaero::world_folders(&from), &xaero::world_folders(&to));
+        assert_eq!(
+            targets.get("Multiplayer_alt.example"),
+            Some(&Some("Multiplayer_neu.example".to_string()))
+        );
+        let parts = Parts {
+            options: false,
+            resource_packs: false,
+            shader_packs: false,
+            ..Parts::default()
+        };
+        let sum = copy_game_dir(&from, &to, parts, &targets).unwrap();
+
+        let merged = WaypointFile::load(&to.join(target)).unwrap();
+        let names: Vec<_> = merged.waypoints().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["Basis", "Mine"], "Doppelte und Todespunkte bleiben draußen");
+        assert_eq!((sum.waypoints, sum.map_files), (0, 1));
+        let map = to.join("xaero/world-map/Multiplayer_neu.example/null/mw$default");
+        assert_eq!(std::fs::read_to_string(map.join("0_0.zip")).unwrap(), "ziel");
+        assert_eq!(std::fs::read_to_string(map.join("1_0.zip")).unwrap(), "neu");
+        assert!(!to.join("xaero/minimap/Multiplayer_alt.example").exists());
+        assert!(!to.join("xaero/minimap/Multiplayer_neu.example/mylauncher-sync.json").exists());
+
+        // Ohne Zuordnung landet die Welt unter ihrem Namen, samt config.txt
+        let sum = copy_game_dir(&from, &to, parts, &WorldTargets::new()).unwrap();
+        assert_eq!(sum.waypoints, 1);
+        let world = to.join("xaero/minimap/Multiplayer_alt.example");
+        assert_eq!(std::fs::read_to_string(world.join("config.txt")).unwrap(), "cfg");
     }
 }

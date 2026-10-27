@@ -111,6 +111,22 @@ impl WaypointFile {
         std::fs::read_to_string(path).ok().map(|t| Self::parse(&t))
     }
 
+    /// Wegpunkte aus `other` anhängen, die hier noch fehlen (gleicher Name und Ort).
+    /// Todespunkte bleiben draußen. Gibt die Zahl der neuen Wegpunkte zurück.
+    pub fn merge_from(&mut self, other: &WaypointFile) -> usize {
+        let key = |w: &Waypoint| (w.name.clone(), w.x, w.y.clone(), w.z);
+        let mut have: std::collections::HashSet<_> = self.waypoints().map(key).collect();
+        let mut added = 0;
+        for w in other.waypoints() {
+            if w.kind != DEATH_TYPE && have.insert(key(w)) {
+                self.ensure_set(&w.set);
+                self.push(w.clone());
+                added += 1;
+            }
+        }
+        added
+    }
+
     pub fn waypoints(&self) -> impl Iterator<Item = &Waypoint> {
         self.lines.iter().filter_map(|l| match l {
             Line::Waypoint(w) => Some(w),
@@ -178,6 +194,34 @@ pub fn minimap_root(game_dir: &Path) -> PathBuf {
     } else {
         modern
     }
+}
+
+/// Wurzel der Weltkarten-Kacheln (neu: `xaero/world-map`, alt: `XaeroWorldMap`).
+pub fn world_map_root(game_dir: &Path) -> PathBuf {
+    let modern = game_dir.join("xaero").join("world-map");
+    let legacy = game_dir.join("XaeroWorldMap");
+    if !modern.exists() && legacy.exists() {
+        legacy
+    } else {
+        modern
+    }
+}
+
+/// Weltordner, für die es Wegpunkte oder Kartenkacheln gibt (z. B. `Multiplayer_play.example.net`).
+pub fn world_folders(game_dir: &Path) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for root in [minimap_root(game_dir), world_map_root(game_dir)] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_dir() && name != "backup" {
+                out.insert(name);
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// Alle Wegpunktdateien einer Welt: (Dimensionsordner, Datei-Stem, Pfad)
